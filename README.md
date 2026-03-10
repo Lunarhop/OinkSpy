@@ -1,165 +1,215 @@
-# Flock-You: Surveillance Device Detector
+🐖 OinkSpy
+Pig-themed BLE Surveillance Detector (Flock-You Fork)
+<img src="flock.png" alt="OinkSpy" width="300px">
 
-<img src="flock.png" alt="Flock You" width="300px">
+Standalone BLE surveillance detector with web dashboard, GPS wardriving, OLED alerts, and session persistence.
 
-**Standalone BLE surveillance device detector with web dashboard, GPS wardriving, and session persistence.**
+OinkSpy is a customized firmware fork of Flock-You, adapted for Seeed Studio XIAO hardware and modified with pig-themed UI, sounds, and branding inspired by projects like Porkchop and Piglet.
 
-Available as part of the OUI-SPY project at [colonelpanic.tech](https://colonelpanic.tech)
+The goal is to create a playful but powerful BLE surveillance detection platform for wardriving, privacy research, and RF experimentation.
 
----
+Overview
 
-## Overview
+OinkSpy detects surveillance infrastructure such as:
 
-Flock-You detects Flock Safety surveillance cameras, Raven gunshot detectors, and related monitoring hardware using BLE-only heuristics. It runs a WiFi access point with a live web dashboard on your phone, tags detections with GPS from your phone's browser, and exports everything as JSON, CSV, or KML for Google Earth.
+Flock Safety cameras
 
-No WiFi sniffing — the radio is dedicated to serving the dashboard AP while BLE scans continuously in the background via ESP32 coexistence.
+SoundThinking / ShotSpotter Raven gunshot detectors
 
----
+related monitoring hardware broadcasting identifiable BLE signals
 
-## Detection Methods
+The firmware runs a WiFi access point with a live web dashboard, allowing you to monitor detections from your phone while the ESP32 continuously scans BLE advertisements.
+
+Detections can be tagged with GPS coordinates from your phone and exported for mapping or analysis.
+
+Unlike traditional wardriving tools, OinkSpy does not perform WiFi sniffing. BLE scanning runs concurrently while the ESP32 radio maintains the dashboard access point.
+
+Detection Methods
 
 All detection is BLE-based:
 
-| Method | Description |
-|--------|-------------|
-| **MAC prefix** | 20 known Flock Safety OUI prefixes (FS Ext Battery, Flock WiFi modules) |
-| **BLE device name** | Case-insensitive substring match: `FS Ext Battery`, `Penguin`, `Flock`, `Pigvision` |
-| **Manufacturer ID** | `0x09C8` (XUNTONG) — catches devices with no broadcast name. *From [wgreenberg/flock-you](https://github.com/wgreenberg/flock-you)* |
-| **Raven service UUID** | Identifies Raven gunshot detectors by BLE GATT service UUIDs |
-| **Raven FW estimation** | Determines firmware version (1.1.x / 1.2.x / 1.3.x) from advertised service patterns |
+Method	Description
+MAC prefix matching	Known Flock Safety OUI prefixes
+BLE device name patterns	Detects identifiers like FS Ext Battery, Penguin, Flock, Pigvision
+BLE manufacturer ID	0x09C8 (XUNTONG) devices
+Raven UUID detection	Identifies Raven gunshot detectors by service UUID fingerprint
+Firmware estimation	Determines Raven firmware generation based on advertised services
+Features
+Detection
 
----
+BLE surveillance device detection
 
-## Features
+Raven gunshot detector fingerprinting
 
-- **WiFi AP**: `flockyou` / password `flockyou123`
-- **Web dashboard** at `192.168.4.1` — live detection feed, pattern database, export tools
-- **GPS wardriving** — phone GPS via browser Geolocation API tags every detection with coordinates
-- **Session persistence** — detections auto-save to flash (SPIFFS) every 60 seconds
-- **Prior session tab** — previous session survives reboot and is viewable in the PREV tab
-- **Export formats**: JSON, CSV, and KML (Google Earth) — current and prior sessions
-- **Serial output** — Flask-compatible JSON over serial for live desktop ingestion
-- **200 unique device storage** with FreeRTOS mutex thread safety
-- **Crow call boot sounds** — modulated descending frequency sweeps with warble texture
-- **Detection alerts** — ascending chirps + descending caw on new device detection
-- **Heartbeat** — soft double coo every 10s while a device stays in range
+RSSI signal strength monitoring
 
----
+multi-heuristic detection engine
 
-## Enabling GPS (Android Chrome)
+Interface
 
-The dashboard uses your phone's GPS to geotag detections. Because it's served over HTTP, Chrome requires a one-time flag change:
+WiFi access point dashboard
 
-1. Open a new Chrome tab and go to `chrome://flags`
-2. Search for **"Insecure origins treated as secure"**
-3. Add `http://192.168.4.1` to the text field
-4. Set the flag to **Enabled**
-5. Tap **Relaunch**
+mobile-friendly web UI
 
-After relaunching, connect to the `flockyou` AP, open `192.168.4.1`, and tap the **GPS** card in the stats bar to grant location permission.
+OLED live status display
 
-> **Note:** iOS Safari does not support Geolocation over HTTP. GPS wardriving requires Android with Chrome.
+audible detection alerts
 
----
+Wardriving
 
-## Hardware
+GPS tagging via browser geolocation
 
-**Board:** Seeed Studio XIAO ESP32-S3
+Google Earth KML export
 
-| Pin | Function |
-|-----|----------|
-| GPIO 3 | Piezo buzzer |
-| GPIO 21 | LED (optional) |
+JSON / CSV export
 
----
+Persistence
 
-## Building & Flashing
+session auto-save to SPIFFS
 
-Requires [PlatformIO](https://platformio.org/).
+previous session viewer
 
-```bash
-cd flock-you
-pio run                     # build
-pio run -t upload           # flash
-pio device monitor          # serial output
-```
+reboot persistence
 
-**Dependencies** (managed by PlatformIO):
+Integration
 
-- `NimBLE-Arduino` — BLE scanning
-- `ESP Async WebServer` + `AsyncTCP` — web dashboard
-- `ArduinoJson` — JSON serialization
-- `SPIFFS` — session persistence to flash
+JSON streaming over BLE or serial
 
----
+Flask dashboard support
 
-## Flask Companion App
+companion-mode API
 
-The `api/` folder contains a Flask web application for desktop analysis of detection data.
+Hardware
 
-```bash
+Recommended board:
+
+Seeed Studio XIAO ESP32-S3
+
+Example wiring:
+
+Pin	Function
+GPIO3	piezo buzzer
+I2C	OLED display
+GPIO21	optional LED
+
+OLED supported:
+SSD1306 128×64 I2C display.
+
+Building & Flashing
+
+Requires PlatformIO.
+
+git clone https://github.com/Lunarhop/OinkSpy
+cd OinkSpy
+
+pio run
+pio run -t upload
+pio device monitor
+
+Dependencies installed automatically:
+
+NimBLE-Arduino
+
+ESP Async WebServer
+
+AsyncTCP
+
+ArduinoJson
+
+SPIFFS
+
+GPS Wardriving
+
+The dashboard can tag detections using your phone’s GPS.
+
+On Android Chrome:
+
+open chrome://flags
+
+enable Insecure origins treated as secure
+
+add:
+
+http://192.168.4.1
+
+relaunch Chrome
+
+connect to the device AP
+
+tap the GPS icon on the dashboard
+
+Note: iOS Safari blocks geolocation over HTTP.
+
+Flask Companion Dashboard
+
+A desktop analysis dashboard is available in the api/ folder.
+
 cd api
 pip install -r requirements.txt
 python flockyou.py
-```
 
-Open `http://localhost:5000` for the desktop dashboard.
+Then open:
 
-**Import support:** JSON, CSV, and KML files exported from the ESP32 can be imported directly into the Flask app. Live serial ingestion is also supported — connect the ESP32 via USB and select the serial port in the Flask UI.
+http://localhost:5000
 
----
+You can import exported detection files or stream live serial data.
 
-## Raven Gunshot Detector Detection
+Raven Gunshot Detector Detection
 
-Flock-You identifies SoundThinking/ShotSpotter Raven devices through BLE service UUID fingerprinting:
+Raven devices are detected through BLE service UUID fingerprinting.
 
-| Service | UUID | Description |
-|---------|------|-------------|
-| Device Info | `0000180a-...` | Serial, model, firmware |
-| GPS | `00003100-...` | Real-time coordinates |
-| Power | `00003200-...` | Battery & solar status |
-| Network | `00003300-...` | LTE/WiFi connectivity |
-| Upload | `00003400-...` | Data transmission metrics |
-| Error | `00003500-...` | Diagnostics & error logs |
-| Health (legacy) | `00001809-...` | Firmware 1.1.x |
-| Location (legacy) | `00001819-...` | Firmware 1.1.x |
+These services expose telemetry such as:
 
-Firmware version is estimated automatically from which service UUIDs are advertised.
+device info
 
----
+GPS
 
-## Acknowledgments
+power systems
 
-- **Will Greenberg** ([@wgreenberg](https://github.com/wgreenberg)) — BLE manufacturer company ID detection (`0x09C8` XUNTONG) sourced from his [flock-you](https://github.com/wgreenberg/flock-you) fork
-- **[DeFlock](https://deflock.me)** ([FoggedLens/deflock](https://github.com/FoggedLens/deflock)) — crowdsourced ALPR location data and detection methodologies. Datasets included in `datasets/`
-- **[GainSec](https://github.com/GainSec)** — Raven BLE service UUID dataset (`raven_configurations.json`) enabling detection of SoundThinking/ShotSpotter acoustic surveillance devices
+LTE / network state
 
----
+upload metrics
 
-## OUI-SPY Firmware Ecosystem
+diagnostics
 
-Flock-You is part of the OUI-SPY firmware family:
+The firmware estimates Raven firmware versions based on which services appear in the advertisement.
 
-| Firmware | Description | Board |
-|----------|-------------|-------|
-| **[OUI-SPY Unified](https://github.com/colonelpanichacks/oui-spy-unified-blue)** | Multi-mode BLE + WiFi detector | ESP32-S3 / ESP32-C5 |
-| **[OUI-SPY Detector](https://github.com/colonelpanichacks/ouispy-detector)** | Targeted BLE scanner with OUI filtering | ESP32-S3 |
-| **[OUI-SPY Foxhunter](https://github.com/colonelpanichacks/ouispy-foxhunter)** | RSSI-based proximity tracker | ESP32-S3 |
-| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Safety / Raven surveillance detection (this project) | ESP32-S3 |
-| **[Sky-Spy](https://github.com/colonelpanichacks/Sky-Spy)** | Drone Remote ID detection | ESP32-S3 / ESP32-C5 |
-| **[Remote-ID-Spoofer](https://github.com/colonelpanichacks/Remote-ID-Spoofer)** | WiFi Remote ID spoofer & simulator with swarm mode | ESP32-S3 |
-| **[OUI-SPY UniPwn](https://github.com/colonelpanichacks/Oui-Spy-UniPwn)** | Unitree robot exploitation system | ESP32-S3 |
+Relationship to Flock-You
 
----
+OinkSpy is a custom fork of the Flock-You project.
 
-## Author
+Upstream project:
 
-**colonelpanichacks**
+https://github.com/colonelpanichacks/flock-you
 
-**Oui-Spy devices available at [colonelpanic.tech](https://colonelpanic.tech)**
+This fork adds:
 
----
+pig-themed UI and alerts
 
-## Disclaimer
+custom hardware support
 
-This tool is intended for security research, privacy auditing, and educational purposes. Detecting the presence of surveillance hardware in public spaces is legal in most jurisdictions. Always comply with local laws regarding wireless scanning and signal interception. The authors are not responsible for misuse.
+firmware branding changes
+
+experimental features for wardriving
+
+Author
+
+Fork maintained by:
+
+Lunarhop
+
+Original project by:
+
+colonelpanichacks
+
+Disclaimer
+
+This project is intended for:
+
+security research
+
+privacy auditing
+
+educational RF experimentation
+
+Always comply with local laws regarding wireless scanning and radio use.
