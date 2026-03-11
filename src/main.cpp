@@ -57,6 +57,12 @@ body{font-family:'Courier New',monospace;background:#1f0f15;color:#fff1f5;displa
 .sep{border:none;border-top:1px solid rgba(251,113,133,.12);margin:12px 0}
 h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 .pig{float:right;font-size:16px;color:#fbcfe8}
+.ev{background:rgba(72,28,43,.4);border:1px solid rgba(251,113,133,.18);border-radius:7px;padding:9px;margin-bottom:8px}
+.ev .hdx{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:#fbcfe8}
+.ev .tp{font-weight:bold;color:#fda4af;letter-spacing:1px}
+.ev .lb{display:inline-block;margin-top:6px;padding:3px 6px;border-radius:999px;background:rgba(251,113,133,.15);font-size:11px}
+.ev .meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;font-size:11px}
+.ev .meta span{background:rgba(251,113,133,.1);padding:3px 6px;border-radius:4px}
 </style></head><body>
 <div class="hd"><h1>OINKSPY <span class="pig">(^oo^)</span></h1><div class="sub">Pig-themed surveillance detector &bull; wardriving + GPS</div></div>
 <div class="st">
@@ -88,25 +94,31 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 <button class="btn" onclick="location.href='/api/history/json'" style="background:#6366f1">DOWNLOAD PREV JSON</button>
 <button class="btn" onclick="location.href='/api/history/kml'" style="background:#22c55e">DOWNLOAD PREV KML</button>
 <hr class="sep">
+<h4>RECENT EVENTS</h4>
+<p style="font-size:10px;color:#f9a8d4;margin-bottom:8px">Latest bookmarks and detections recorded by the device</p>
+<div id="eL"><div class="empty">No recent events yet</div></div>
+<hr class="sep">
 <button class="btn dng" onclick="if(confirm('Clear all detections?'))fetch('/api/clear').then(()=>refresh())">CLEAR ALL DETECTIONS</button>
 </div>
 </div>
 <script>
-let D=[],H=[];
-function tab(i,el){document.querySelectorAll('.tb button').forEach(b=>b.classList.remove('a'));document.querySelectorAll('.pn').forEach(p=>p.classList.remove('a'));el.classList.add('a');document.getElementById('p'+i).classList.add('a');if(i===1&&!window._hL)loadHistory();if(i===2&&!window._pL)loadPat();}
+let D=[],H=[],E=[];
+function tab(i,el){document.querySelectorAll('.tb button').forEach(b=>b.classList.remove('a'));document.querySelectorAll('.pn').forEach(p=>p.classList.remove('a'));el.classList.add('a');document.getElementById('p'+i).classList.add('a');if(i===1&&!window._hL)loadHistory();if(i===2&&!window._pL)loadPat();if(i===3)loadEvents();}
 function refresh(){fetch('/api/detections').then(r=>r.json()).then(d=>{D=d;render();stats();}).catch(()=>{});}
 function render(){const el=document.getElementById('dL');if(!D.length){el.innerHTML='<div class="empty">Snout up, scanning for surveillance gear...<br>BLE active on all channels</div>';return;} D.sort((a,b)=>b.last-a.last);el.innerHTML=D.map(card).join('');}
 function stats(){document.getElementById('sT').textContent=D.length;document.getElementById('sR').textContent=D.filter(d=>d.raven).length; fetch('/api/stats').then(r=>r.json()).then(s=>{let g=document.getElementById('sG');if(s.gps_valid){g.textContent=s.gps_tagged+'/'+s.total;g.style.color='#22c55e';}else{g.textContent='OFF';g.style.color='#ef4444';}}).catch(()=>{});}
 function card(d){return '<div class="det"><div class="mac">'+d.mac+(d.name?'<span class="nm">'+d.name+'</span>':'')+'</div><div class="inf"><span>RSSI: '+d.rssi+'</span><span>'+d.method+'</span><span style="color:#fda4af;font-weight:bold">&times;'+d.count+'</span>'+(d.raven?'<span class="rv">RAVEN '+d.fw+'</span>':'')+(d.gps?'<span style="color:#22c55e">&#9673; '+d.gps.lat.toFixed(5)+','+d.gps.lon.toFixed(5)+'</span>':'<span style="color:#666">no gps</span>')+'</div></div>';}
+function eventCard(e){let title=e.record_type==='bookmark'?'BOOKMARK':'DETECTION';let label=e.label?'<div class="lb">'+e.label+'</div>':'';let gps=e.gps?'<span>GPS '+e.gps.lat.toFixed(5)+','+e.gps.lon.toFixed(5)+'</span>':'';let who=e.mac?'<span>'+e.mac+(e.name?' '+e.name:'')+'</span>':'';let sig=e.record_type==='detection'?'<span>RSSI '+e.rssi+'</span><span>'+e.method+'</span><span>&times;'+e.count+'</span>':'';let rv=e.is_raven?'<span>RAVEN '+e.raven_fw+'</span>':'';return '<div class="ev"><div class="hdx"><span class="tp">'+title+'</span><span>'+(e.iso8601||('ms '+e.millis))+'</span></div>'+label+'<div class="meta"><span>boot '+e.boot_count+'</span><span>'+e.time_source+'</span>'+who+sig+rv+gps+'</div></div>';}
 function loadHistory(){fetch('/api/history').then(r=>r.json()).then(d=>{H=d;let el=document.getElementById('hL');if(!H.length){el.innerHTML='<div class="empty">No prior session data</div>';return;} H.sort((a,b)=>b.last-a.last);el.innerHTML='<div style="font-size:11px;color:#f9a8d4;margin-bottom:8px">'+H.length+' detections from prior session</div>'+H.map(card).join('');window._hL=1;}).catch(()=>{document.getElementById('hL').innerHTML='<div class="empty">No prior session data</div>';});}
 function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{let h=''; h+='<div class="pg"><h3>Oink MAC Prefixes ('+p.macs.length+')</h3><div class="it">'+p.macs.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>Contract Mfr MACs ('+p.macs_mfr.length+')</h3><div class="it">'+p.macs_mfr.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>SoundThinking MACs ('+p.macs_soundthinking.length+')</h3><div class="it">'+p.macs_soundthinking.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>BLE Device Names ('+p.names.length+')</h3><div class="it">'+p.names.map(n=>'<span>'+n+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>BLE Manufacturer IDs ('+p.mfr.length+')</h3><div class="it">'+p.mfr.map(m=>'<span>0x'+m.toString(16).toUpperCase().padStart(4,'0')+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>Raven UUIDs ('+p.raven.length+')</h3><div class="it">'+p.raven.map(u=>'<span style="font-size:8px">'+u+'</span>').join('')+'</div></div>'; document.getElementById('pC').innerHTML=h;window._pL=1;}).catch(()=>{});}
+function loadEvents(){fetch('/api/events').then(r=>r.json()).then(d=>{E=d;let el=document.getElementById('eL');if(!E.length){el.innerHTML='<div class="empty">No recent events yet</div>';return;} el.innerHTML=E.map(eventCard).join('');}).catch(()=>{document.getElementById('eL').innerHTML='<div class="empty">Recent events unavailable</div>';});}
 let _gW=null,_gOk=false,_gTried=false;
 function sendGPS(p){_gOk=true;let g=document.getElementById('sG');g.textContent='OK';g.style.color='#22c55e'; fetch('/api/gps?lat='+p.coords.latitude+'&lon='+p.coords.longitude+'&acc='+(p.coords.accuracy||0)).catch(()=>{});}
 function gpsErr(e){_gOk=false;let g=document.getElementById('sG'); var msg='ERR';if(e.code===1){msg='DENIED';g.style.color='#ef4444';alert('GPS permission denied. On iPhone, GPS requires HTTPS which this device cannot provide. On Android Chrome, tap the lock/info icon in the address bar and allow Location.');} else if(e.code===2){msg='N/A';g.style.color='#ef4444';} else if(e.code===3){msg='WAIT';g.style.color='#facc15';} g.textContent=msg;}
 function startGPS(){if(!navigator.geolocation){return false;} if(_gW!==null){navigator.geolocation.clearWatch(_gW);_gW=null;} let g=document.getElementById('sG');g.textContent='...';g.style.color='#facc15'; _gW=navigator.geolocation.watchPosition(sendGPS,gpsErr,{enableHighAccuracy:true,maximumAge:5000,timeout:15000});return true;}
 function reqGPS(){if(!navigator.geolocation){alert('GPS not available in this browser.');return;} if(_gOk){return;} if(!window.isSecureContext){alert('GPS requires a secure context (HTTPS). This HTTP page may not get GPS permission.\n\nAndroid Chrome: try chrome://flags and enable "Insecure origins treated as secure", add http://192.168.4.1\n\niPhone: GPS will not work over HTTP.');} startGPS();_gTried=true;}
 function syncClock(){fetch('/api/time?epoch='+Math.floor(Date.now()/1000)).catch(()=>{});}
-refresh();syncClock();setInterval(refresh,2500);setInterval(syncClock,60000);
+refresh();loadEvents();syncClock();setInterval(refresh,2500);setInterval(loadEvents,3000);setInterval(syncClock,60000);
 </script></body></html>
 )rawliteral";
 
@@ -154,6 +166,11 @@ void setupServer() {
     gServer.on("/api/detections", HTTP_GET, [](AsyncWebServerRequest* request) {
         AsyncResponseStream* resp = request->beginResponseStream("application/json");
         oink::log::writeDetectionsJson(resp);
+        request->send(resp);
+    });
+    gServer.on("/api/events", HTTP_GET, [](AsyncWebServerRequest* request) {
+        AsyncResponseStream* resp = request->beginResponseStream("application/json");
+        oink::log::writeRecentEventsJson(resp);
         request->send(resp);
     });
 

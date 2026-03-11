@@ -25,6 +25,7 @@ void appendDetectionEvent(const char* mac,
 void appendBookmarkEvent(const char* label);
 void writeDetectionsJson(AsyncResponseStream* resp);
 void writeDetectionsKml(AsyncResponseStream* resp);
+void writeRecentEventsJson(AsyncResponseStream* resp);
 bool storageReady();
 bool sdReady();
 bool readSdTextFile(const char* path, String& out);

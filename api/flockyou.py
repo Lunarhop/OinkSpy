@@ -1,17 +1,22 @@
 from flask import Flask, render_template, request, jsonify, send_file
 import json
 import csv
+import glob
 import os
 from datetime import datetime
 import time
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import threading
 import serial
-import serial.tools.list_ports
 import queue
 import uuid
 import pickle
 from pathlib import Path
+
+try:
+    import serial.tools.list_ports as serial_list_ports
+except ImportError:
+    serial_list_ports = None
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'flockyou_dev_key_2024')
@@ -39,6 +44,17 @@ connection_lock = threading.Lock()
 serial_queue = queue.Queue()
 next_detection_id = 1  # Unique ID counter
 settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
+
+SERIAL_PORT_GLOBS = (
+    '/dev/ttyUSB*',
+    '/dev/ttyACM*',
+    '/dev/ttyAMA*',
+    '/dev/ttyS*',
+    '/dev/ttyHS*',
+    '/dev/ttyGS*',
+    '/dev/ttyMSM*',
+    '/dev/ttyXRUSB*',
+)
 
 # Data storage paths
 DATA_DIR = Path('data')
@@ -91,6 +107,64 @@ def save_settings():
         print(f"Saved settings: {settings}")
     except Exception as e:
         print(f"Error saving settings: {e}")
+
+def build_port_info(device, description, manufacturer='Unknown', product='Unknown', vid=None, pid=None):
+    """Return a dashboard-friendly serial port record."""
+    return {
+        'device': device,
+        'description': description,
+        'manufacturer': manufacturer,
+        'product': product,
+        'vid': vid,
+        'pid': pid
+    }
+
+def discover_fallback_serial_ports():
+    """Scan common serial device names when pySerial cannot enumerate ports."""
+    discovered_ports = {}
+
+    manual_ports = [
+        port.strip()
+        for port in os.environ.get('OINKSPY_SERIAL_PORTS', '').split(',')
+        if port.strip()
+    ]
+    for port in manual_ports:
+        discovered_ports[port] = build_port_info(
+            port,
+            'Manual serial port from OINKSPY_SERIAL_PORTS'
+        )
+
+    for pattern in SERIAL_PORT_GLOBS:
+        for device in sorted(glob.glob(pattern)):
+            discovered_ports.setdefault(
+                device,
+                build_port_info(device, f'Fallback scan ({Path(device).name})')
+            )
+
+    return list(discovered_ports.values())
+
+def discover_serial_ports():
+    """Return available serial ports with an Android-safe fallback."""
+    if serial_list_ports is not None:
+        try:
+            return [
+                build_port_info(
+                    port.device,
+                    port.description,
+                    port.manufacturer if port.manufacturer else 'Unknown',
+                    port.product if port.product else 'Unknown',
+                    port.vid,
+                    port.pid
+                )
+                for port in serial_list_ports.comports()
+            ]
+        except Exception as e:
+            print(f"pySerial port enumeration failed, using fallback scan: {e}")
+
+    fallback_ports = discover_fallback_serial_ports()
+    if serial_list_ports is None:
+        print("pySerial port enumeration unavailable on this platform, using fallback scan")
+    return fallback_ports
 
 # Load OUI database
 def load_oui_database():
@@ -781,34 +855,12 @@ def get_status():
 @app.route('/api/gps/ports', methods=['GET'])
 def get_gps_ports():
     """Get available serial ports for GPS"""
-    ports = []
-    for port in serial.tools.list_ports.comports():
-        port_info = {
-            'device': port.device,
-            'description': port.description,
-            'manufacturer': port.manufacturer if port.manufacturer else 'Unknown',
-            'product': port.product if port.product else 'Unknown',
-            'vid': port.vid,
-            'pid': port.pid
-        }
-        ports.append(port_info)
-    return jsonify(ports)
+    return jsonify(discover_serial_ports())
 
 @app.route('/api/flock/ports', methods=['GET'])
 def get_flock_ports():
     """Get available serial ports for Flock You device"""
-    ports = []
-    for port in serial.tools.list_ports.comports():
-        port_info = {
-            'device': port.device,
-            'description': port.description,
-            'manufacturer': port.manufacturer if port.manufacturer else 'Unknown',
-            'product': port.product if port.product else 'Unknown',
-            'vid': port.vid,
-            'pid': port.pid
-        }
-        ports.append(port_info)
-    return jsonify(ports)
+    return jsonify(discover_serial_ports())
 
 @app.route('/api/export/csv', methods=['GET'])
 def export_csv():

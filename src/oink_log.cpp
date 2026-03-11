@@ -51,6 +51,43 @@ struct LogEvent {
 QueueHandle_t gLogQueue = nullptr;
 TaskHandle_t gLogTaskHandle = nullptr;
 
+void rememberRecentEvent(const LogEvent& event) {
+    if (!oink::gApp.mutex || xSemaphoreTake(oink::gApp.mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return;
+    }
+
+    oink::RecentLogEvent& recent = oink::gApp.recentEvents[oink::gApp.recentEventHead];
+    memset(&recent, 0, sizeof(recent));
+
+    strlcpy(recent.recordType,
+            event.type == LogEventType::Bookmark ? "bookmark" : "detection",
+            sizeof(recent.recordType));
+    strlcpy(recent.label, event.label, sizeof(recent.label));
+    strlcpy(recent.mac, event.mac, sizeof(recent.mac));
+    strlcpy(recent.name, event.name, sizeof(recent.name));
+    recent.rssi = event.rssi;
+    strlcpy(recent.method, event.method, sizeof(recent.method));
+    recent.count = event.count;
+    recent.isRaven = event.isRaven;
+    strlcpy(recent.ravenFW, event.ravenFw, sizeof(recent.ravenFW));
+    recent.hasGPS = event.hasGps;
+    recent.gpsLat = event.gpsLat;
+    recent.gpsLon = event.gpsLon;
+    recent.gpsAcc = event.gpsAcc;
+    recent.millisAtEvent = millis();
+    recent.epoch = oink::timeutil::currentEpoch();
+    recent.bootCount = oink::settings::bootCount();
+    strlcpy(recent.timeSource, oink::timeutil::timeSourceLabel(), sizeof(recent.timeSource));
+    oink::timeutil::formatIso8601(recent.iso8601, sizeof(recent.iso8601));
+
+    oink::gApp.recentEventHead = (oink::gApp.recentEventHead + 1) % 16;
+    if (oink::gApp.recentEventCount < 16) {
+        ++oink::gApp.recentEventCount;
+    }
+
+    xSemaphoreGive(oink::gApp.mutex);
+}
+
 bool pathExists(const char* path) {
     return gSd.exists(path);
 }
@@ -382,6 +419,7 @@ void processBookmarkEvent(const LogEvent& event) {
 }
 
 void processLogEvent(const LogEvent& event) {
+    rememberRecentEvent(event);
     switch (event.type) {
         case LogEventType::Detection:
             processDetectionEvent(event);
@@ -708,6 +746,52 @@ void writeDetectionsKml(AsyncResponseStream* resp) {
     }
 
     resp->print("</Document>\n</kml>");
+}
+
+void writeRecentEventsJson(AsyncResponseStream* resp) {
+    resp->print("[");
+    if (gApp.mutex && xSemaphoreTake(gApp.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+        bool first = true;
+        for (uint8_t offset = 0; offset < gApp.recentEventCount; ++offset) {
+            int index = static_cast<int>(gApp.recentEventHead) - 1 - static_cast<int>(offset);
+            if (index < 0) {
+                index += 16;
+            }
+
+            const RecentLogEvent& event = gApp.recentEvents[index];
+            if (!first) {
+                resp->print(",");
+            }
+            first = false;
+
+            resp->printf(
+                "{\"record_type\":\"%s\",\"label\":\"%s\",\"mac\":\"%s\",\"name\":\"%s\",\"rssi\":%d,\"method\":\"%s\",\"count\":%d,\"is_raven\":%s,\"raven_fw\":\"%s\",\"millis\":%lu,\"epoch\":%lu,\"iso8601\":\"%s\",\"time_source\":\"%s\",\"boot_count\":%lu",
+                event.recordType,
+                event.label,
+                event.mac,
+                event.name,
+                event.rssi,
+                event.method,
+                event.count,
+                event.isRaven ? "true" : "false",
+                event.ravenFW,
+                event.millisAtEvent,
+                static_cast<unsigned long>(event.epoch),
+                event.iso8601,
+                event.timeSource,
+                event.bootCount);
+            if (event.hasGPS) {
+                resp->printf(",\"gps\":{\"lat\":%.8f,\"lon\":%.8f,\"acc\":%.1f}}",
+                             event.gpsLat,
+                             event.gpsLon,
+                             event.gpsAcc);
+            } else {
+                resp->print("}");
+            }
+        }
+        xSemaphoreGive(gApp.mutex);
+    }
+    resp->print("]");
 }
 
 bool storageReady() {

@@ -32,6 +32,27 @@ struct RecentNotification {
     unsigned long timestamp;
 };
 
+struct RecentLogEvent {
+    char recordType[12];
+    char label[24];
+    char mac[18];
+    char name[48];
+    int rssi;
+    char method[32];
+    int count;
+    bool isRaven;
+    char ravenFW[16];
+    bool hasGPS;
+    double gpsLat;
+    double gpsLon;
+    float gpsAcc;
+    unsigned long millisAtEvent;
+    time_t epoch;
+    char iso8601[40];
+    char timeSource[24];
+    unsigned long bootCount;
+};
+
 struct AppState {
     Detection detections[config::kMaxDetections];
     int detectionCount;
@@ -85,6 +106,9 @@ struct AppState {
     char sessionJsonlPath[64];
     char dailyCsvPath[64];
     char dailyJsonlPath[64];
+    RecentLogEvent recentEvents[16];
+    uint8_t recentEventHead;
+    uint8_t recentEventCount;
 
     RecentNotification notifications[4];
     uint8_t notificationHead;
