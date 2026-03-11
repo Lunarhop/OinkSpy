@@ -1,0 +1,17 @@
+{
+  "ap_ssid": "oinkyou",
+  "ap_password": "oinkyou123",
+  "timezone": "UTC0",
+  "ntp_enabled": true,
+  "ntp_server_1": "pool.ntp.org",
+  "ntp_server_2": "time.nist.gov",
+  "buzzer_enabled": true,
+  "ble_scan_interval_ms": 3000,
+  "standalone_scan_duration_sec": 2,
+  "companion_scan_duration_sec": 3,
+  "save_interval_ms": 15000,
+  "serial_timeout_ms": 5000,
+  "sd_logging_enabled": true,
+  "sd_json_enabled": true,
+  "sd_csv_enabled": true
+}

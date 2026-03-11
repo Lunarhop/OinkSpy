@@ -3,11 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flock You - Detection Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+    <title>OinkSpy - Detection Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
+        :root {
+            --bg-1: #2a171d;
+            --bg-2: #4f2f39;
+            --bg-3: #201016;
+            --panel: rgba(68, 38, 46, 0.82);
+            --panel-strong: rgba(42, 23, 29, 0.94);
+            --panel-deep: rgba(27, 14, 19, 0.95);
+            --text: #fff4f6;
+            --muted: #fbcfe8;
+            --soft: #f9a8d4;
+            --accent: #f472b6;
+            --accent-2: #fb7185;
+            --accent-3: #fecdd3;
+            --line: rgba(251, 113, 133, 0.42);
+            --shadow: rgba(32, 16, 22, 0.45);
+            --chip: rgba(255, 244, 246, 0.08);
+            --ok: #34d399;
+            --warn: #fbbf24;
+            --danger: #fb7185;
+            --card-blue: #7c2d12;
+            --card-blue-border: #fb7185;
+        }
+
+        body.n3rdsec-mode {
+            --bg-1: #08110f;
+            --bg-2: #0d2a20;
+            --bg-3: #050807;
+            --panel: rgba(8, 28, 21, 0.86);
+            --panel-strong: rgba(5, 18, 14, 0.94);
+            --panel-deep: rgba(2, 10, 8, 0.96);
+            --text: #ddfff5;
+            --muted: #86efac;
+            --soft: #4ade80;
+            --accent: #22c55e;
+            --accent-2: #2dd4bf;
+            --accent-3: #bbf7d0;
+            --line: rgba(45, 212, 191, 0.35);
+            --shadow: rgba(0, 0, 0, 0.5);
+            --chip: rgba(34, 197, 94, 0.08);
+            --ok: #22c55e;
+            --warn: #fbbf24;
+            --danger: #f87171;
+            --card-blue: #052e2b;
+            --card-blue-border: #2dd4bf;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -15,18 +61,24 @@
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #2d1b69 0%, #1a1033 50%, #4a1b69 100%);
-            color: #e0e0e0;
+            font-family: 'Space Grotesk', sans-serif;
+            background:
+                radial-gradient(circle at 12% 18%, rgba(255, 214, 224, 0.16) 0, rgba(255, 214, 224, 0.16) 2rem, transparent 2.1rem),
+                radial-gradient(circle at 18% 18%, rgba(255, 214, 224, 0.16) 0, rgba(255, 214, 224, 0.16) 2rem, transparent 2.1rem),
+                radial-gradient(circle at 88% 12%, rgba(255, 214, 224, 0.09) 0, rgba(255, 214, 224, 0.09) 1.1rem, transparent 1.2rem),
+                linear-gradient(135deg, var(--bg-1) 0%, var(--bg-2) 52%, var(--bg-3) 100%);
+            color: var(--text);
             min-height: 100vh;
+            transition: background 0.35s ease, color 0.35s ease;
         }
 
         .header {
-            background: rgba(26, 16, 51, 0.95);
-            color: #e0e0e0;
+            background: var(--panel-strong);
+            color: var(--text);
             padding: 1rem;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-            border-bottom: 2px solid #8b5cf6;
+            box-shadow: 0 10px 32px var(--shadow);
+            border-bottom: 1px solid var(--line);
+            backdrop-filter: blur(14px);
         }
 
         .header-content {
@@ -60,27 +112,143 @@
             align-items: center;
         }
 
-        .header h1 {
-            font-size: 1.6rem;
-            margin: 0;
-            white-space: nowrap;
+        .brand-lockup {
+            display: flex;
+            align-items: center;
+            gap: 0.9rem;
         }
 
-        .flock-you-title {
-            font-family: 'Orbitron', 'Courier New', monospace;
-            font-size: 1.4rem;
-            font-weight: 700;
-            color: #ec4899;
-            text-shadow: 0 0 10px rgba(236, 72, 153, 0.5);
-            letter-spacing: 2px;
-            margin: 0;
-            white-space: nowrap;
+        .pig-mark {
+            width: 52px;
+            height: 52px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 50% 42%, #ffd5e3 0 44%, #f472b6 45% 100%);
+            position: relative;
+            box-shadow: inset 0 -6px 12px rgba(0, 0, 0, 0.12), 0 10px 24px rgba(244, 114, 182, 0.22);
             flex-shrink: 0;
         }
 
+        .pig-mark::before,
+        .pig-mark::after {
+            content: '';
+            position: absolute;
+            top: 18px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #3f1d2e;
+        }
+
+        .pig-mark::before {
+            left: 14px;
+        }
+
+        .pig-mark::after {
+            right: 14px;
+        }
+
+        .pig-mark-nose {
+            position: absolute;
+            left: 50%;
+            bottom: 10px;
+            transform: translateX(-50%);
+            width: 24px;
+            height: 16px;
+            border-radius: 999px;
+            background: #fecdd3;
+            box-shadow: inset 0 -2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .pig-mark-nose::before,
+        .pig-mark-nose::after {
+            content: '';
+            position: absolute;
+            top: 4px;
+            width: 4px;
+            height: 8px;
+            border-radius: 999px;
+            background: #be185d;
+        }
+
+        .pig-mark-nose::before {
+            left: 6px;
+        }
+
+        .pig-mark-nose::after {
+            right: 6px;
+        }
+
+        .brand-text {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0.1rem;
+        }
+
+        .oinkspy-title {
+            font-family: 'Baloo 2', cursive;
+            font-size: 2rem;
+            line-height: 1;
+            font-weight: 800;
+            color: var(--accent-3);
+            letter-spacing: 0.04em;
+            margin: 0;
+            white-space: nowrap;
+        }
+
+        .brand-subtitle {
+            font-size: 0.82rem;
+            color: var(--muted);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .brand-chip-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 0.4rem;
+            flex-wrap: wrap;
+        }
+
+        .brand-chip {
+            border: 1px solid var(--line);
+            background: var(--chip);
+            color: var(--accent-3);
+            border-radius: 999px;
+            padding: 0.2rem 0.65rem;
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .n3rdsec-badge {
+            border: 1px dashed var(--line);
+            background: transparent;
+            color: var(--muted);
+            border-radius: 999px;
+            padding: 0.2rem 0.65rem;
+            font-size: 0.72rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+
+        .n3rdsec-badge:hover {
+            color: var(--text);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.04), 0 0 18px rgba(244, 114, 182, 0.18);
+        }
+
+        .n3rdsec-status {
+            min-height: 1rem;
+            font-size: 0.72rem;
+            color: var(--muted);
+            margin-top: 0.35rem;
+        }
+
         @media (max-width: 1200px) {
-            .flock-you-title {
-                font-size: 1.3rem;
+            .oinkspy-title {
+                font-size: 1.8rem;
             }
         }
 
@@ -148,7 +316,7 @@
 
         .control-group label {
             font-weight: 600;
-            color: #e0e0e0;
+            color: var(--text);
             font-size: 0.75rem;
             white-space: nowrap;
             min-width: fit-content;
@@ -164,9 +332,9 @@
         }
 
         select {
-            background: #2d1b69;
-            color: #e0e0e0;
-            border: 1px solid #8b5cf6;
+            background: var(--panel);
+            color: var(--text);
+            border: 1px solid var(--line);
             min-width: 100px;
             max-width: 140px;
             font-size: 0.75rem;
@@ -174,21 +342,21 @@
 
         select:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.24);
         }
 
         button {
-            background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
             color: white;
             font-weight: 600;
-            border: 1px solid #7c3aed;
+            border: 1px solid transparent;
         }
 
         button:hover {
-            background: linear-gradient(135deg, #a855f7 0%, #c084fc 100%);
+            background: linear-gradient(135deg, var(--accent-2) 0%, var(--soft) 100%);
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+            box-shadow: 0 8px 18px rgba(244, 114, 182, 0.24);
         }
 
         button.danger {
@@ -227,18 +395,18 @@
         }
 
         .oui-search-btn {
-            background: linear-gradient(135deg, #7c3aed 0%, #8b5cf6 100%);
+            background: linear-gradient(135deg, #be185d 0%, var(--accent) 100%);
             color: white;
             font-weight: 600;
-            border: 1px solid #6d28d9;
+            border: 1px solid transparent;
             padding: 0.3rem 0.6rem;
             font-size: 0.75rem;
         }
 
         .oui-search-btn:hover {
-            background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--soft) 100%);
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
+            box-shadow: 0 8px 18px rgba(244, 114, 182, 0.24);
         }
 
         .map-btn {
@@ -257,18 +425,18 @@
         }
 
         .serial-terminal-container {
-            background: rgba(45, 27, 105, 0.8);
-            border: 1px solid #8b5cf6;
+            background: var(--panel);
+            border: 1px solid var(--line);
             border-radius: 12px;
             margin-top: 1rem;
             overflow: hidden;
-            box-shadow: 0 8px 32px rgba(139, 92, 246, 0.3);
+            box-shadow: 0 8px 32px var(--shadow);
         }
 
         .serial-terminal-header {
-            background: rgba(45, 27, 105, 0.9);
+            background: var(--panel-strong);
             padding: 1rem 1.5rem;
-            border-bottom: 1px solid #8b5cf6;
+            border-bottom: 1px solid var(--line);
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -277,7 +445,7 @@
         }
 
         .serial-terminal-header h2 {
-            color: #c084fc;
+            color: var(--accent-3);
             font-size: 1.2rem;
             font-weight: 600;
             margin: 0;
@@ -297,14 +465,14 @@
         }
 
         .terminal-filter-group label {
-            color: #c084fc;
+            color: var(--accent-3);
             font-size: 0.85rem;
             font-weight: 600;
         }
 
         .terminal-filter-select {
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: var(--panel-deep);
+            border: 1px solid var(--line);
             border-radius: 4px;
             color: #e0e0e0;
             padding: 0.3rem 0.6rem;
@@ -314,12 +482,12 @@
 
         .terminal-filter-select:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.24);
         }
 
         .serial-status {
-            color: #a855f7;
+            color: var(--soft);
             font-size: 0.9rem;
             font-weight: 500;
         }
@@ -341,18 +509,18 @@
         }
 
         .serial-terminal-content {
-            background: rgba(15, 10, 26, 0.95);
+            background: var(--panel-deep);
             padding: 1rem;
             height: 300px;
             overflow-y: auto;
             font-family: 'Courier New', monospace;
             font-size: 13px;
             line-height: 1.4;
-            color: #e0e0e0;
+            color: var(--text);
             white-space: pre-wrap;
             word-wrap: break-word;
             scrollbar-width: thin;
-            scrollbar-color: #8b5cf6 #2d1b69;
+            scrollbar-color: var(--accent) var(--panel);
         }
 
         .serial-terminal-content::-webkit-scrollbar {
@@ -360,17 +528,17 @@
         }
 
         .serial-terminal-content::-webkit-scrollbar-track {
-            background: #2d1b69;
+            background: var(--panel);
             border-radius: 4px;
         }
 
         .serial-terminal-content::-webkit-scrollbar-thumb {
-            background: #8b5cf6;
+            background: var(--accent);
             border-radius: 4px;
         }
 
         .serial-terminal-content::-webkit-scrollbar-thumb:hover {
-            background: #a855f7;
+            background: var(--soft);
         }
 
         .terminal-placeholder {
@@ -386,7 +554,7 @@
         }
 
         .serial-line.detection {
-            color: #c084fc;
+            color: var(--accent-3);
             font-weight: 600;
         }
 
@@ -407,25 +575,25 @@
         }
 
         .oui-search-container {
-            background: rgba(45, 27, 105, 0.8);
-            border: 1px solid #8b5cf6;
+            background: var(--panel);
+            border: 1px solid var(--line);
             border-radius: 12px;
             margin-top: 1rem;
             overflow: hidden;
-            box-shadow: 0 8px 32px rgba(139, 92, 246, 0.3);
+            box-shadow: 0 8px 32px var(--shadow);
         }
 
         .oui-search-header {
-            background: rgba(45, 27, 105, 0.9);
+            background: var(--panel-strong);
             padding: 1rem 1.5rem;
-            border-bottom: 1px solid #8b5cf6;
+            border-bottom: 1px solid var(--line);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .oui-search-header h2 {
-            color: #c084fc;
+            color: var(--accent-3);
             font-size: 1.2rem;
             font-weight: 600;
             margin: 0;
@@ -438,7 +606,7 @@
         }
 
         .oui-status {
-            color: #a855f7;
+            color: var(--soft);
             font-size: 0.9rem;
             font-weight: 500;
         }
@@ -503,20 +671,20 @@
 
         .oui-search-input {
             flex: 1;
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: var(--panel-deep);
+            border: 1px solid var(--line);
             border-radius: 6px;
-            color: #e0e0e0;
+            color: var(--text);
             padding: 0.5rem;
             font-size: 0.9rem;
         }
 
         .oui-search-input:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
-            background: rgba(15, 10, 26, 0.95);
-            color: #e0e0e0;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.24);
+            background: var(--panel-deep);
+            color: var(--text);
         }
 
         .oui-search-input::placeholder {
@@ -524,7 +692,7 @@
         }
 
         .search-btn {
-            background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
             color: white;
             font-size: 0.9rem;
             padding: 0.5rem 1rem;
@@ -535,19 +703,19 @@
         }
 
         .search-btn:hover {
-            background: linear-gradient(135deg, #a855f7 0%, #c084fc 100%);
+            background: linear-gradient(135deg, var(--accent-2) 0%, var(--soft) 100%);
             transform: translateY(-1px);
         }
 
         .search-results {
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: var(--panel-deep);
+            border: 1px solid var(--line);
             border-radius: 6px;
             padding: 1rem;
             max-height: 400px;
             overflow-y: auto;
             scrollbar-width: thin;
-            scrollbar-color: #8b5cf6 #2d1b69;
+            scrollbar-color: var(--accent) var(--panel);
         }
 
         .oui-results-grid {
@@ -559,8 +727,8 @@
         }
 
         .oui-result-item {
-            background: rgba(45, 27, 105, 0.5);
-            border: 1px solid #8b5cf6;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--line);
             border-radius: 4px;
             padding: 0.3rem;
             margin-bottom: 0;
@@ -573,14 +741,14 @@
         }
 
         .oui-mac {
-            color: #c084fc;
+            color: var(--accent-3);
             font-weight: 600;
             font-family: 'Courier New', monospace;
             font-size: 0.75rem;
         }
 
         .oui-manufacturer {
-            color: #e0e0e0;
+            color: var(--text);
             margin-top: 0.25rem;
             font-size: 0.7rem;
             line-height: 1.2;
@@ -592,17 +760,17 @@
         }
 
         .search-results::-webkit-scrollbar-track {
-            background: #2d1b69;
+            background: var(--panel);
             border-radius: 4px;
         }
 
         .search-results::-webkit-scrollbar-thumb {
-            background: #8b5cf6;
+            background: var(--accent);
             border-radius: 4px;
         }
 
         .search-results::-webkit-scrollbar-thumb:hover {
-            background: #a855f7;
+            background: var(--soft);
         }
 
         .search-placeholder {
@@ -613,8 +781,8 @@
         }
 
         .oui-result-item {
-            background: rgba(45, 27, 105, 0.5);
-            border: 1px solid #8b5cf6;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--line);
             border-radius: 6px;
             padding: 0.75rem;
             margin-bottom: 0.5rem;
@@ -625,13 +793,13 @@
         }
 
         .oui-mac {
-            color: #c084fc;
+            color: var(--accent-3);
             font-weight: 600;
             font-family: 'Courier New', monospace;
         }
 
         .oui-manufacturer {
-            color: #e0e0e0;
+            color: var(--text);
             margin-top: 0.25rem;
         }
 
@@ -641,16 +809,16 @@
             border-radius: 4px;
             display: inline-block;
             min-width: 100px;
-            background: #1e40af;
-            border: 1px solid #3b82f6;
-            color: #93c5fd;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--line);
+            color: var(--accent-3);
             font-weight: 600;
             font-size: 0.85rem;
         }
 
         .alias-display:hover {
-            background: #2563eb;
-            border-color: #60a5fa;
+            background: rgba(255, 255, 255, 0.11);
+            border-color: var(--accent);
             color: white;
         }
 
@@ -660,10 +828,10 @@
         }
 
         .alias-input {
-            background: rgba(45, 27, 105, 0.8);
-            border: 1px solid #8b5cf6;
+            background: var(--panel);
+            border: 1px solid var(--line);
             border-radius: 4px;
-            color: #e0e0e0;
+            color: var(--text);
             padding: 2px 6px;
             font-size: 0.9rem;
             width: 120px;
@@ -671,8 +839,8 @@
 
         .alias-input:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.24);
         }
 
         .status-indicator {
@@ -721,23 +889,23 @@
         }
 
         .stat-card {
-            background: rgba(45, 27, 105, 0.8);
+            background: var(--panel);
             padding: 1.5rem;
             border-radius: 12px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
             text-align: center;
-            border: 1px solid #8b5cf6;
+            border: 1px solid var(--line);
             backdrop-filter: blur(10px);
         }
 
         .stat-number {
             font-size: 2rem;
             font-weight: bold;
-            color: #c084fc;
+            color: var(--accent-3);
         }
 
         .stat-label {
-            color: #d1d5db;
+            color: var(--text);
             margin-top: 0.5rem;
         }
 
@@ -749,25 +917,25 @@
         }
 
         .detections-container {
-            background: rgba(45, 27, 105, 0.8);
+            background: var(--panel);
             border-radius: 12px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
             overflow: hidden;
-            border: 1px solid #8b5cf6;
+            border: 1px solid var(--line);
             backdrop-filter: blur(10px);
         }
 
         .detections-header {
-            background: rgba(26, 16, 51, 0.9);
+            background: var(--panel-strong);
             padding: 1rem;
-            border-bottom: 1px solid #8b5cf6;
+            border-bottom: 1px solid var(--line);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .detections-header h2 {
-            color: #c084fc;
+            color: var(--accent-3);
             font-size: 1.2rem;
             font-weight: 600;
             margin: 0;
@@ -777,7 +945,7 @@
             max-height: 600px;
             overflow-y: auto;
             scrollbar-width: thin;
-            scrollbar-color: #8b5cf6 #2d1b69;
+            scrollbar-color: var(--accent) var(--panel);
         }
 
         .detections-list::-webkit-scrollbar {
@@ -785,22 +953,22 @@
         }
 
         .detections-list::-webkit-scrollbar-track {
-            background: #2d1b69;
+            background: var(--panel);
             border-radius: 4px;
         }
 
         .detections-list::-webkit-scrollbar-thumb {
-            background: #8b5cf6;
+            background: var(--accent);
             border-radius: 4px;
         }
 
         .detections-list::-webkit-scrollbar-thumb:hover {
-            background: #a855f7;
+            background: var(--soft);
         }
 
         .detection-item {
-            background: #1e3a8a;
-            border: 1px solid #3b82f6;
+            background: var(--card-blue);
+            border: 1px solid var(--card-blue-border);
             border-radius: 6px;
             padding: 0.5rem;
             margin-bottom: 0.5rem;
@@ -809,8 +977,8 @@
         }
 
         .detection-item:hover {
-            background: #1e40af;
-            border-color: #60a5fa;
+            background: rgba(164, 85, 105, 0.88);
+            border-color: var(--accent-3);
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
         }
 
@@ -828,19 +996,19 @@
         }
 
         .gps-link {
-            color: #93c5fd;
+            color: var(--accent-3);
             font-size: 0.8rem;
             font-weight: 600;
             text-decoration: none;
             padding: 0.1rem 0.3rem;
             border-radius: 3px;
             background: rgba(147, 197, 253, 0.1);
-            border: 1px solid #3b82f6;
+            border: 1px solid var(--line);
             transition: all 0.2s ease;
         }
 
         .gps-link:hover {
-            background: #3b82f6;
+            background: var(--accent);
             color: white;
             text-decoration: none;
         }
@@ -852,7 +1020,7 @@
         }
 
         .detection-type {
-            background: #2563eb;
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
             color: white;
             padding: 0.25rem 0.6rem;
             border-radius: 4px;
@@ -885,7 +1053,7 @@
         }
 
         .detection-time {
-            color: #93c5fd;
+            color: var(--accent-3);
             font-size: 0.9rem;
             font-weight: 600;
         }
@@ -906,7 +1074,7 @@
 
         .detail-label {
             font-weight: 700;
-            color: #93c5fd;
+            color: var(--accent-3);
             font-size: 0.9rem;
             margin-right: 0.5rem;
         }
@@ -947,10 +1115,10 @@
         }
 
         .detection-search-input {
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: var(--panel-deep);
+            border: 1px solid var(--line);
             border-radius: 6px;
-            color: #e0e0e0;
+            color: var(--text);
             padding: 0.4rem 0.8rem;
             font-size: 0.8rem;
             width: 200px;
@@ -958,10 +1126,10 @@
 
         .detection-search-input:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
-            background: rgba(15, 10, 26, 0.95);
-            color: #e0e0e0;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.24);
+            background: var(--panel-deep);
+            color: var(--text);
         }
 
         .detection-search-input::placeholder {
@@ -969,13 +1137,13 @@
         }
 
         .export-btn {
-            background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
-            border: 1px solid #7c3aed;
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+            border: 1px solid transparent;
         }
 
         .export-btn:hover {
-            background: linear-gradient(135deg, #a855f7 0%, #c084fc 100%);
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+            background: linear-gradient(135deg, var(--accent-2) 0%, var(--soft) 100%);
+            box-shadow: 0 8px 18px rgba(244, 114, 182, 0.24);
         }
 
         .clear-btn {
@@ -997,16 +1165,16 @@
             display: none;
             position: absolute;
             right: 0;
-            background: rgba(45, 27, 105, 0.95);
+            background: var(--panel-strong);
             min-width: 160px;
             box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
-            border: 1px solid #8b5cf6;
+            border: 1px solid var(--line);
             border-radius: 6px;
             z-index: 1000;
         }
 
         .export-dropdown-content a {
-            color: #e0e0e0;
+            color: var(--text);
             padding: 8px 12px;
             text-decoration: none;
             display: block;
@@ -1015,7 +1183,7 @@
         }
 
         .export-dropdown-content a:hover {
-            background: rgba(139, 92, 246, 0.3);
+            background: rgba(255, 255, 255, 0.08);
         }
 
         .dropdown-toggle {
@@ -1023,18 +1191,18 @@
         }
 
         .map-container {
-            background: rgba(45, 27, 105, 0.8);
-            border: 1px solid #8b5cf6;
+            background: var(--panel);
+            border: 1px solid var(--line);
             border-radius: 12px;
             margin-top: 1rem;
             overflow: hidden;
-            box-shadow: 0 8px 32px rgba(139, 92, 246, 0.3);
+            box-shadow: 0 8px 32px var(--shadow);
         }
 
         .map-header {
-            background: rgba(45, 27, 105, 0.9);
+            background: var(--panel-strong);
             padding: 1rem 1.5rem;
-            border-bottom: 1px solid #8b5cf6;
+            border-bottom: 1px solid var(--line);
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -1043,7 +1211,7 @@
         }
 
         .map-header h2 {
-            color: #c084fc;
+            color: var(--accent-3);
             font-size: 1.2rem;
             font-weight: 600;
             margin: 0;
@@ -1065,17 +1233,17 @@
 
         .map-layer-group label,
         .map-filter-group label {
-            color: #c084fc;
+            color: var(--accent-3);
             font-size: 0.85rem;
             font-weight: 600;
         }
 
         .map-layer-select,
         .map-filter-select {
-            background: rgba(15, 10, 26, 0.95);
-            border: 1px solid #8b5cf6;
+            background: var(--panel-deep);
+            border: 1px solid var(--line);
             border-radius: 4px;
-            color: #e0e0e0;
+            color: var(--text);
             padding: 0.3rem 0.6rem;
             font-size: 0.8rem;
             min-width: 120px;
@@ -1084,12 +1252,12 @@
         .map-layer-select:focus,
         .map-filter-select:focus {
             outline: none;
-            border-color: #c084fc;
-            box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.3);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.24);
         }
 
         .map-status {
-            color: #a855f7;
+            color: var(--soft);
             font-size: 0.9rem;
             font-weight: 500;
         }
@@ -1125,8 +1293,8 @@
         }
 
         .map-legend {
-            background: rgba(15, 10, 26, 0.9);
-            border: 1px solid #8b5cf6;
+            background: var(--panel-deep);
+            border: 1px solid var(--line);
             border-radius: 6px;
             padding: 0.5rem;
             margin-top: 0.5rem;
@@ -1138,7 +1306,7 @@
         }
 
         .legend-title {
-            color: #c084fc;
+            color: var(--accent-3);
             margin: 0;
             font-size: 0.85rem;
             font-weight: 600;
@@ -1168,8 +1336,8 @@
 
         .wifi-session { background: #ef4444; border-color: #22c55e; }
         .wifi-cumulative { background: #ef4444; border-color: #f59e0b; }
-        .ble-session { background: #3b82f6; border-color: #22c55e; }
-        .ble-cumulative { background: #3b82f6; border-color: #f59e0b; }
+        .ble-session { background: #f472b6; border-color: #22c55e; }
+        .ble-cumulative { background: #f472b6; border-color: #f59e0b; }
 
         @media (max-width: 1200px) {
             .header-content {
@@ -1219,9 +1387,9 @@
                 padding: 0.75rem;
             }
             
-            .flock-you-title {
+            .oinkspy-title {
                 font-size: 1.1rem;
-                letter-spacing: 1px;
+                letter-spacing: 0.03em;
             }
             
             .header-controls {
@@ -1282,7 +1450,20 @@
     <div class="header">
         <div class="header-content">
             <div class="header-title">
-                <h1 class="flock-you-title">FLOCK-YOU</h1>
+                <div class="brand-lockup">
+                    <div class="pig-mark" aria-hidden="true">
+                        <div class="pig-mark-nose"></div>
+                    </div>
+                    <div class="brand-text">
+                        <h1 class="oinkspy-title">OinkSpy</h1>
+                        <div class="brand-subtitle">Sniffing for surveillance, one oink at a time</div>
+                        <div class="brand-chip-row">
+                            <span class="brand-chip">Pig Theme Active</span>
+                            <button id="n3rdsecBadge" class="n3rdsec-badge" type="button" title="A quiet nod for the operators who tap three times.">N3rdSec</button>
+                        </div>
+                        <div id="n3rdsecStatus" class="n3rdsec-status">Sty cam online. Rooted in pink, watching in silence.</div>
+                    </div>
+                </div>
             </div>
             
             <div class="header-controls">
@@ -1292,7 +1473,7 @@
                         <label>Sniffer:</label>
                         <div class="port-controls">
                             <select id="flockDeviceSelect">
-                                <option value="">Select Port</option>
+                                <option value="">Select OinkSpy Port</option>
                             </select>
                             <button id="refreshFlockPortsBtn" class="refresh-btn" title="Refresh ports" onclick="loadFlockPorts()">↻</button>
                         </div>
@@ -1389,9 +1570,9 @@
                 </div>
             </div>
             <div class="detections-list" id="detectionsList">
-                <div class="no-detections">
-                    <h3>No detections yet</h3>
-                    <p>Start scanning with your Flock You device to see detections here</p>
+                    <div class="no-detections">
+                        <h3>No detections yet</h3>
+                    <p>Start scanning with your OinkSpy rig to see detections here</p>
                 </div>
             </div>
         </div>
@@ -1413,7 +1594,7 @@
                 </div>
             </div>
             <div class="serial-terminal-content" id="serialTerminalOutput">
-                <div class="terminal-placeholder">Connect to a Sniffer device to see serial output...</div>
+                <div class="terminal-placeholder">Connect to an OinkSpy sniffer to see serial output...</div>
             </div>
         </div>
 
@@ -1510,6 +1691,8 @@
         let mapMarkers = [];
         let mapLayers = {};
         let mapFilter = 'session';
+        let n3rdsecTapCount = 0;
+        let n3rdsecTapTimer = null;
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
@@ -1520,6 +1703,7 @@
             setupEventListeners();
             loadStatus();
             loadSettings();
+            initializeN3rdSecEasterEgg();
             
             // Periodic status refresh every 5 seconds
             setInterval(loadStatus, 5000);
@@ -1576,6 +1760,51 @@
                 setTimeout(() => { userInteractingWithPorts = false; }, 1000); 
             });
             gpsSelect.addEventListener('change', () => { userInteractingWithPorts = true; });
+        }
+
+        function initializeN3rdSecEasterEgg() {
+            const badge = document.getElementById('n3rdsecBadge');
+            if (!badge) return;
+
+            badge.addEventListener('click', function() {
+                n3rdsecTapCount += 1;
+
+                if (n3rdsecTapTimer) {
+                    clearTimeout(n3rdsecTapTimer);
+                }
+
+                n3rdsecTapTimer = setTimeout(() => {
+                    n3rdsecTapCount = 0;
+                    setN3rdSecStatus(document.body.classList.contains('n3rdsec-mode')
+                        ? 'N3rdSec relay active. Quiet green mode is holding.'
+                        : 'Sty cam online. Rooted in pink, watching in silence.');
+                }, 1300);
+
+                if (n3rdsecTapCount >= 3) {
+                    n3rdsecTapCount = 0;
+                    toggleN3rdSecMode();
+                } else {
+                    const remaining = 3 - n3rdsecTapCount;
+                    setN3rdSecStatus(`N3rdSec handshake ${n3rdsecTapCount}/3. ${remaining} tap${remaining === 1 ? '' : 's'} to arm.`);
+                }
+            });
+        }
+
+        function toggleN3rdSecMode() {
+            const enabled = document.body.classList.toggle('n3rdsec-mode');
+            setN3rdSecStatus(enabled
+                ? 'N3rdSec nod unlocked. Quiet green mode engaged.'
+                : 'Pig theme restored. Back to the rosy stakeout.');
+            addSerialLine(enabled
+                ? '[N3rdSec] quiet mode engaged'
+                : '[N3rdSec] quiet mode disengaged', 'info');
+        }
+
+        function setN3rdSecStatus(message) {
+            const status = document.getElementById('n3rdsecStatus');
+            if (status) {
+                status.textContent = message;
+            }
         }
 
         function loadDetections() {
@@ -1701,9 +1930,9 @@
             fetch('/api/flock/ports')
                 .then(response => response.json())
                 .then(ports => {
-                    console.log('Flock ports loaded:', ports.length);
+                    console.log('OinkSpy ports loaded:', ports.length);
                     
-                    select.innerHTML = '<option value="">Select Flock You Port</option>';
+                    select.innerHTML = '<option value="">Select OinkSpy Port</option>';
                     ports.forEach(port => {
                         const option = document.createElement('option');
                         option.value = port.device;
@@ -1722,7 +1951,7 @@
                     refreshBtn.title = 'Refresh ports';
                 })
                 .catch(error => {
-                    console.error('Error loading Flock ports:', error);
+                    console.error('Error loading OinkSpy ports:', error);
                     // Reset refresh button on error
                     refreshBtn.textContent = '↻';
                     refreshBtn.style.animation = '';
@@ -1737,7 +1966,7 @@
                 return;
             }
 
-            console.log('Connecting to Flock device on port:', port);
+            console.log('Connecting to OinkSpy device on port:', port);
             
             fetch('/api/flock/connect', {
                 method: 'POST',
@@ -1754,24 +1983,24 @@
                     document.getElementById('connectFlockBtn').style.display = 'none';
                     document.getElementById('disconnectFlockBtn').style.display = 'inline-block';
                 } else {
-                    alert('Flock You connection failed: ' + data.message);
+                    alert('OinkSpy connection failed: ' + data.message);
                 }
             })
             .catch(error => {
-                console.error('Flock connection error:', error);
+                console.error('OinkSpy connection error:', error);
                 alert('Connection failed: ' + error.message);
             });
         }
 
         function disconnectFlock() {
-            console.log('Disconnecting Flock device');
+            console.log('Disconnecting OinkSpy device');
             
             fetch('/api/flock/disconnect', {
                 method: 'POST'
             })
             .then(response => response.json())
             .then(data => {
-                console.log('Flock disconnect response:', data);
+                console.log('OinkSpy disconnect response:', data);
                 if (data.status === 'success') {
                     updateFlockStatus(false);
                     document.getElementById('connectFlockBtn').style.display = 'inline-block';
@@ -1779,7 +2008,7 @@
                 }
             })
             .catch(error => {
-                console.error('Flock disconnect error:', error);
+                console.error('OinkSpy disconnect error:', error);
             });
         }
 
@@ -2218,7 +2447,7 @@
         });
 
         socket.on('flock_disconnected', function() {
-            console.log('Sniffer device disconnected');
+            console.log('OinkSpy sniffer disconnected');
             updateFlockStatus(false);
             const connectBtn = document.getElementById('connectFlockBtn');
             const disconnectBtn = document.getElementById('disconnectFlockBtn');
@@ -2239,12 +2468,12 @@
         });
 
         socket.on('flock_reconnected', function(data) {
-            console.log('Sniffer device reconnected:', data);
+            console.log('OinkSpy sniffer reconnected:', data);
             updateFlockStatus(true);
             document.getElementById('connectFlockBtn').style.display = 'none';
             document.getElementById('disconnectFlockBtn').style.display = 'inline-block';
             if (document.getElementById('serialTerminalContainer').style.display !== 'none') {
-                addSerialLine(`Sniffer device reconnected on ${data.port}`, 'success');
+                addSerialLine(`OinkSpy sniffer reconnected on ${data.port}`, 'success');
             }
         });
 
@@ -2280,11 +2509,11 @@
                 if (flockPort) {
                     startSerialConnection(flockPort);
                 } else {
-                    addSerialLine('No Sniffer device selected', 'error');
+                    addSerialLine('No OinkSpy sniffer selected', 'error');
                 }
             } else {
                 container.style.display = 'none';
-                button.textContent = 'Serial Terminal';
+                button.textContent = 'Terminal';
                 button.style.background = 'linear-gradient(135deg, #059669 0%, #10b981 100%)';
             }
         }
@@ -2295,12 +2524,12 @@
             
             if (container.style.display === 'none') {
                 container.style.display = 'block';
-                button.textContent = 'Hide Search';
+                button.textContent = 'Hide OUI';
                 button.style.background = 'linear-gradient(135deg, #dc2626 0%, #ef4444 100%)';
             } else {
                 container.style.display = 'none';
-                button.textContent = 'Search OUI';
-                button.style.background = 'linear-gradient(135deg, #7c3aed 0%, #8b5cf6 100%)';
+                button.textContent = 'OUI';
+                button.style.background = 'linear-gradient(135deg, #be185d 0%, #f472b6 100%)';
             }
         }
 
@@ -2454,7 +2683,7 @@
             updateFlockStatus(true);
             document.getElementById('connectFlockBtn').style.display = 'none';
             document.getElementById('disconnectFlockBtn').style.display = 'inline-block';
-            addSerialLine(`Sniffer device reconnected on ${data.port}`, 'success');
+            addSerialLine(`OinkSpy sniffer reconnected on ${data.port}`, 'success');
         });
 
         socket.on('gps_reconnected', function(data) {
@@ -2745,7 +2974,10 @@
                 const isSessionData = detections.some(d => d.mac_address === detection.mac_address);
                 
                 // Create custom icon based on detection type and data source
-                let iconColor = detection.protocol === 'wifi' ? '#ef4444' : '#3b82f6'; // red for wifi, blue for ble
+                const styles = getComputedStyle(document.body);
+                const wifiColor = styles.getPropertyValue('--accent-2').trim() || '#fb7185';
+                const bleColor = styles.getPropertyValue('--accent').trim() || '#f472b6';
+                let iconColor = detection.protocol === 'wifi' ? wifiColor : bleColor;
                 let borderColor = isSessionData ? '#22c55e' : '#f59e0b'; // green border for session, orange for cumulative
                 
                 const icon = L.divIcon({

@@ -1,215 +1,174 @@
-🐖 OinkSpy
-Pig-themed BLE Surveillance Detector (Flock-You Fork)
+# OinkSpy
+Pig-themed BLE surveillance detector for the Seeed Studio XIAO ESP32-S3.
+
 <img src="flock.png" alt="OinkSpy" width="300px">
 
-Standalone BLE surveillance detector with web dashboard, GPS wardriving, OLED alerts, and session persistence.
+OinkSpy is a customized `flock-you` fork adapted for the `Seeed Studio XIAO ESP32-S3` and the `XIAO Expansion Board v1.1`. It focuses on BLE-based surveillance detection with an on-device OLED UI, buzzer alerts, a phone-friendly web dashboard, and wardriving-oriented exports.
 
-OinkSpy is a customized firmware fork of Flock-You, adapted for Seeed Studio XIAO hardware and modified with pig-themed UI, sounds, and branding inspired by projects like Porkchop and Piglet.
+## Current Status
+- Platform: `PlatformIO + Arduino`
+- Target board: `seeed_xiao_esp32s3`
+- Current firmware shape: single-file prototype in `src/main.cpp`
+- Confirmed features: BLE detection, Raven UUID heuristics, OLED status, buzzer alerts, Wi-Fi AP dashboard, phone GPS tagging, CSV/JSON/KML export, SPIFFS session persistence
+- In-progress productization: WSL-first development workflow, XIAO Expansion Board integration, SD logging, physical controls, power management, OTA
 
-The goal is to create a playful but powerful BLE surveillance detection platform for wardriving, privacy research, and RF experimentation.
+## Detection Coverage
+OinkSpy currently detects likely surveillance hardware using BLE heuristics:
 
-Overview
+| Method | Description |
+| --- | --- |
+| MAC prefix matching | Known Flock Safety and related OUI prefixes |
+| BLE device name patterns | Identifiers such as `FS Ext Battery`, `Penguin`, `Flock`, `Pigvision` |
+| BLE manufacturer ID | `0x09C8` (`XUNTONG`) devices |
+| Raven UUID detection | Service UUID fingerprinting for Raven gunshot detectors |
+| Firmware estimation | Approximate Raven generation from advertised services |
 
-OinkSpy detects surveillance infrastructure such as:
+## Hardware Baseline
+Recommended hardware:
 
-Flock Safety cameras
+- `Seeed Studio XIAO ESP32-S3`
+- `Seeed Studio XIAO Expansion Board v1.1`
 
-SoundThinking / ShotSpotter Raven gunshot detectors
+Current and planned board mapping:
 
-related monitoring hardware broadcasting identifiable BLE signals
+| XIAO Pin | GPIO | Function |
+| --- | --- | --- |
+| `D1` | `GPIO2` | Expansion board user button |
+| `D2` | `GPIO3` | MicroSD chip select |
+| `D3` | `GPIO4` | Expansion board buzzer |
+| `D4` | `GPIO5` | I2C SDA for OLED and optional RTC |
+| `D5` | `GPIO6` | I2C SCL for OLED and optional RTC |
+| `D6` | `GPIO43` | UART TX for optional Grove GPS |
+| `D7` | `GPIO44` | UART RX for optional Grove GPS |
+| `D8` | `GPIO7` | SPI SCK for MicroSD |
+| `D9` | `GPIO8` | SPI MISO for MicroSD |
+| `D10` | `GPIO9` | SPI MOSI for MicroSD |
+| `LED_BUILTIN` | `GPIO21` | Single-color status LED fallback |
 
-The firmware runs a WiFi access point with a live web dashboard, allowing you to monitor detections from your phone while the ESP32 continuously scans BLE advertisements.
+Notes:
 
-Detections can be tagged with GPS coordinates from your phone and exported for mapping or analysis.
+- OLED is expected on I2C address `0x3C`, with `0x3D` as a runtime fallback probe.
+- The Expansion Board docs clearly cover OLED, button, buzzer, SD, Grove, battery charging, and RTC support.
+- An onboard RGB LED is not currently treated as available; status feedback should assume buzzer + OLED + single-color LED unless extra hardware is added.
 
-Unlike traditional wardriving tools, OinkSpy does not perform WiFi sniffing. BLE scanning runs concurrently while the ESP32 radio maintains the dashboard access point.
+## WSL + VS Code + PlatformIO Workflow
+OinkSpy is now documented as a `WSL-first` PlatformIO project.
 
-Detection Methods
+Recommended workflow:
 
-All detection is BLE-based:
+1. Open the repo in `VS Code Remote - WSL`.
+2. Install `PlatformIO Core` inside WSL.
+3. Run builds from WSL so `.pio/` stays local to your Linux environment.
+4. Use whichever upload path is most reliable on your machine:
+   - Recommended: build in WSL, flash and monitor from Windows PlatformIO when the USB device is attached to Windows as `COMx`.
+   - Optional: upload and monitor directly from WSL if the device is passed through as `/dev/ttyUSB*` or `/dev/ttyACM*`.
 
-Method	Description
-MAC prefix matching	Known Flock Safety OUI prefixes
-BLE device name patterns	Detects identifiers like FS Ext Battery, Penguin, Flock, Pigvision
-BLE manufacturer ID	0x09C8 (XUNTONG) devices
-Raven UUID detection	Identifies Raven gunshot detectors by service UUID fingerprint
-Firmware estimation	Determines Raven firmware generation based on advertised services
-Features
-Detection
+Expected serial-port difference:
 
-BLE surveillance device detection
+- Windows: `COMx`
+- WSL/Linux: `/dev/ttyUSB*` or `/dev/ttyACM*`
 
-Raven gunshot detector fingerprinting
+## Building and Flashing
+Requires `PlatformIO`.
 
-RSSI signal strength monitoring
-
-multi-heuristic detection engine
-
-Interface
-
-WiFi access point dashboard
-
-mobile-friendly web UI
-
-OLED live status display
-
-audible detection alerts
-
-Wardriving
-
-GPS tagging via browser geolocation
-
-Google Earth KML export
-
-JSON / CSV export
-
-Persistence
-
-session auto-save to SPIFFS
-
-previous session viewer
-
-reboot persistence
-
-Integration
-
-JSON streaming over BLE or serial
-
-Flask dashboard support
-
-companion-mode API
-
-Hardware
-
-Recommended board:
-
-Seeed Studio XIAO ESP32-S3
-
-Example wiring:
-
-Pin	Function
-GPIO3	piezo buzzer
-I2C	OLED display
-GPIO21	optional LED
-
-OLED supported:
-SSD1306 128×64 I2C display.
-
-Building & Flashing
-
-Requires PlatformIO.
-
+### Build in WSL
+```bash
 git clone https://github.com/Lunarhop/OinkSpy
 cd OinkSpy
-
 pio run
+```
+
+### Upload Path A: Windows PlatformIO
+Use this when the board is attached to Windows and exposed as `COMx`.
+
+```bash
 pio run -t upload
 pio device monitor
+```
 
-Dependencies installed automatically:
+### Upload Path B: WSL USB passthrough
+Use this only if the device is reliably visible inside WSL.
 
-NimBLE-Arduino
+```bash
+pio run -t upload
+pio device monitor
+```
 
-ESP Async WebServer
+If upload from WSL is unstable, treat `build in WSL + flash in Windows` as the supported fallback rather than a blocker.
 
-AsyncTCP
+## Milestone 0 Environment Check
+Before deeper firmware refactors, verify:
 
-ArduinoJson
+- `pio run` succeeds from your WSL environment
+- the `seeed_xiao_esp32s3` board package resolves cleanly
+- USB CDC logging works in the upload path you actually use
+- at least one reproducible upload/monitor path is documented for your machine
 
-SPIFFS
+Acceptance criteria:
 
-GPS Wardriving
+- firmware builds reproducibly from WSL
+- upload path is known and repeatable
+- serial logs are readable after flash
+- OLED and buzzer still respond on boot
 
-The dashboard can tag detections using your phone’s GPS.
+## Dependencies
+Current embedded dependencies in `platformio.ini`:
+
+- `olikraus/U8g2@^2.35.19`
+- `h2zero/NimBLE-Arduino@1.4.2`
+- `ESP32Async/AsyncTCP@^3.3.2`
+- `ESP32Async/ESPAsyncWebServer@^3.6.0`
+- `bblanchon/ArduinoJson@^7.0.4`
+
+Planned additions for the plug-and-play build:
+
+- `SdFat` for MicroSD logging
+- `Update.h` / Arduino OTA for firmware updates
+- a small RTC wrapper for optional `PCF8563` support
+
+## GPS Wardriving
+The current dashboard can tag detections using your phone’s GPS.
 
 On Android Chrome:
 
-open chrome://flags
-
-enable Insecure origins treated as secure
-
-add:
-
-http://192.168.4.1
-
-relaunch Chrome
-
-connect to the device AP
-
-tap the GPS icon on the dashboard
+1. Open `chrome://flags`
+2. Enable `Insecure origins treated as secure`
+3. Add `http://192.168.4.1`
+4. Relaunch Chrome
+5. Connect to the device AP
+6. Tap the GPS icon on the dashboard
 
 Note: iOS Safari blocks geolocation over HTTP.
 
-Flask Companion Dashboard
+Future hardware support will also target Grove UART GPS on `D6/D7`.
 
-A desktop analysis dashboard is available in the api/ folder.
+## Flask Companion Dashboard
+A desktop analysis dashboard is available in `api/`.
 
+```bash
 cd api
 pip install -r requirements.txt
 python flockyou.py
+```
 
-Then open:
+Then open `http://localhost:5000`.
 
-http://localhost:5000
+## Relationship to Flock-You
+OinkSpy is a custom fork of the upstream project:
 
-You can import exported detection files or stream live serial data.
+- Upstream: https://github.com/colonelpanichacks/flock-you
+- This fork adds pig-themed UI and alerts, XIAO-targeted hardware support, firmware branding changes, and experimental wardriving features
 
-Raven Gunshot Detector Detection
-
-Raven devices are detected through BLE service UUID fingerprinting.
-
-These services expose telemetry such as:
-
-device info
-
-GPS
-
-power systems
-
-LTE / network state
-
-upload metrics
-
-diagnostics
-
-The firmware estimates Raven firmware versions based on which services appear in the advertisement.
-
-Relationship to Flock-You
-
-OinkSpy is a custom fork of the Flock-You project.
-
-Upstream project:
-
-https://github.com/colonelpanichacks/flock-you
-
-This fork adds:
-
-pig-themed UI and alerts
-
-custom hardware support
-
-firmware branding changes
-
-experimental features for wardriving
-
-Author
-
-Fork maintained by:
-
-Lunarhop
-
-Original project by:
-
-colonelpanichacks
-
-Disclaimer
-
+## Disclaimer
 This project is intended for:
 
-security research
-
-privacy auditing
-
-educational RF experimentation
+- security research
+- privacy auditing
+- educational RF experimentation
 
 Always comply with local laws regarding wireless scanning and radio use.
+## SD Config
+Place a JSON config file on the SD card at `config/oinkspy.json`.
+A starter template is included at `config.oinkspy.example.json`.
+Current supported keys: `ap_ssid`, `ap_password`, `buzzer_enabled`, `ble_scan_interval_ms`, `standalone_scan_duration_sec`, `companion_scan_duration_sec`, `save_interval_ms`, `serial_timeout_ms`, `sd_logging_enabled`, `sd_json_enabled`, `sd_csv_enabled`.
+
