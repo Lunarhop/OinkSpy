@@ -13,5 +13,6 @@
   "serial_timeout_ms": 5000,
   "sd_logging_enabled": true,
   "sd_json_enabled": true,
-  "sd_csv_enabled": true
+  "sd_csv_enabled": true,
+  "gnss_enabled": true
 }

@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "oink_config.h"
+#include "oink_gnss.h"
 #include "oink_scan.h"
 #include "oink_state.h"
 
@@ -92,6 +93,64 @@ enum class PigMood {
     Paused,
     Companion,
 };
+
+void serviceAudio();
+
+void drawN3rdSecSkull(int x, int y) {
+    gDisplay.drawCircle(x + 18, y + 18, 18, U8G2_DRAW_ALL);
+    gDisplay.drawRFrame(x + 3, y + 14, 18, 12, 4);
+    gDisplay.drawRFrame(x + 15, y + 14, 18, 12, 4);
+    gDisplay.drawBox(x + 19, y + 17, 2, 4);
+    gDisplay.drawDisc(x + 12, y + 20, 4, U8G2_DRAW_ALL);
+    gDisplay.drawDisc(x + 24, y + 20, 4, U8G2_DRAW_ALL);
+    gDisplay.drawTriangle(x + 18, y + 23, x + 14, y + 33, x + 22, y + 33);
+    gDisplay.drawRFrame(x + 8, y + 34, 20, 13, 3);
+    gDisplay.drawVLine(x + 13, y + 35, 10);
+    gDisplay.drawVLine(x + 18, y + 35, 10);
+    gDisplay.drawVLine(x + 23, y + 35, 10);
+    gDisplay.drawLine(x + 6, y + 41, x + 2, y + 49);
+    gDisplay.drawLine(x + 30, y + 41, x + 34, y + 49);
+    gDisplay.drawPixel(x + 2, y + 12);
+    gDisplay.drawPixel(x + 33, y + 12);
+}
+
+void drawStartupSplash() {
+    gDisplay.clearBuffer();
+
+    // Glitch streaks inspired by the supplied image.
+    for (int i = 0; i < 7; ++i) {
+        int y = 4 + i * 8;
+        int x = (i % 2 == 0) ? 56 : 66;
+        int w = 18 + (i % 3) * 10;
+        gDisplay.drawHLine(x, y, w);
+        if (i % 2 == 0) {
+            gDisplay.drawHLine(x + 8, y + 1, w - 6);
+        }
+    }
+
+    drawN3rdSecSkull(4, 6);
+
+    gDisplay.setFont(u8g2_font_9x15B_tr);
+    gDisplay.drawStr(46, 24, "N3RD");
+    gDisplay.drawStr(58, 42, "SEC");
+
+    gDisplay.setFont(u8g2_font_4x6_tr);
+    gDisplay.drawStr(10, 56, "Your network.");
+    gDisplay.drawStr(58, 56, "Our playground.");
+
+    gDisplay.drawHLine(44, 28, 70);
+    gDisplay.drawHLine(52, 30, 55);
+    gDisplay.sendBuffer();
+}
+
+void showStartupSplash(unsigned long durationMs) {
+    drawStartupSplash();
+    unsigned long started = millis();
+    while (millis() - started < durationMs) {
+        serviceAudio();
+        delay(5);
+    }
+}
 
 void enqueueEvent(ControlEvent event) {
     size_t next = (gControlTail + 1) % kControlQueueSize;
@@ -339,6 +398,7 @@ void initializeDisplay() {
     gDisplay.setFont(u8g2_font_6x12_tr);
     gDisplay.setContrast(180);
     oink::gApp.oledReady = true;
+    showStartupSplash(1400);
     printf("[OINK-YOU] OLED ready (SSD1306 128x64 on SDA=%u SCL=%u)\n",
            config::kI2cSdaPin,
            config::kI2cSclPin);
@@ -492,16 +552,16 @@ void serviceUi() {
         gDisplay.drawStr(0, 55, "DETECTED!");
     } else {
         gDisplay.setFont(u8g2_font_5x7_tr);
-        int y = 46;
-        for (int i = 0; i < 2; ++i) {
-            uint8_t idx = (oink::gApp.notificationHead + 4 - 1 - i) % 4;
-            if (oink::gApp.notifications[idx].shortDesc[0]) {
-                char trimmed[14];
-                copyTrimmed(trimmed, sizeof(trimmed), oink::gApp.notifications[idx].shortDesc, 12);
-                gDisplay.drawStr(0, y, trimmed);
-                y += 9;
-            }
+        gDisplay.drawStr(0, 46, oink::gnss::gpsSeen() ? "GPS: seen" : "GPS: none");
+
+        char satsBuf[16];
+        int sats = oink::gnss::satellitesUsed();
+        if (sats >= 0) {
+            snprintf(satsBuf, sizeof(satsBuf), "Sats: %d", sats);
+        } else {
+            strlcpy(satsBuf, "Sats: -", sizeof(satsBuf));
         }
+        gDisplay.drawStr(0, 55, satsBuf);
     }
 
     gDisplay.sendBuffer();

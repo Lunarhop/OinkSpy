@@ -33,6 +33,11 @@ void loadDefaults() {
     oink::gApp.runtimeConfig.sdLoggingEnabled = true;
     oink::gApp.runtimeConfig.sdJsonEnabled = true;
     oink::gApp.runtimeConfig.sdCsvEnabled = true;
+#if OINK_FEATURE_GNSS
+    oink::gApp.runtimeConfig.gnssEnabled = true;
+#else
+    oink::gApp.runtimeConfig.gnssEnabled = false;
+#endif
 }
 
 void mergeConfigJson(const String& jsonText) {
@@ -73,6 +78,7 @@ void mergeConfigJson(const String& jsonText) {
     oink::gApp.runtimeConfig.sdLoggingEnabled = root["sd_logging_enabled"] | oink::gApp.runtimeConfig.sdLoggingEnabled;
     oink::gApp.runtimeConfig.sdJsonEnabled = root["sd_json_enabled"] | oink::gApp.runtimeConfig.sdJsonEnabled;
     oink::gApp.runtimeConfig.sdCsvEnabled = root["sd_csv_enabled"] | oink::gApp.runtimeConfig.sdCsvEnabled;
+    oink::gApp.runtimeConfig.gnssEnabled = root["gnss_enabled"] | oink::gApp.runtimeConfig.gnssEnabled;
 }
 
 void populateDeviceId() {

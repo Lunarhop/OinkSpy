@@ -4,6 +4,30 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef OINK_FEATURE_GNSS
+#define OINK_FEATURE_GNSS 1
+#endif
+
+#ifndef OINK_GNSS_BAUD
+#define OINK_GNSS_BAUD 9600
+#endif
+
+#ifndef OINK_GNSS_UART_RX
+#define OINK_GNSS_UART_RX D6
+#endif
+
+#ifndef OINK_GNSS_UART_TX
+#define OINK_GNSS_UART_TX D7
+#endif
+
+#ifndef OINK_GNSS_HW_SERIAL_NUM
+#define OINK_GNSS_HW_SERIAL_NUM 1
+#endif
+
+#ifndef OINK_GNSS_LED_PIN
+#define OINK_GNSS_LED_PIN LED_BUILTIN
+#endif
+
 namespace oink::config {
 
 static constexpr uint8_t kButtonPin = D1;
@@ -34,6 +58,9 @@ static constexpr unsigned long kButtonDebounceMs = 30;
 static constexpr unsigned long kButtonLongPressMs = 800;
 static constexpr unsigned long kButtonDoublePressMs = 500;
 static constexpr unsigned long kAudioTickMs = 8;
+static constexpr size_t kGnssRingBufferSize = 256;
+static constexpr size_t kGnssSentenceBufferSize = 128;
+static constexpr float kGnssHdopToAccuracyMeters = 5.0f;
 
 static constexpr const char kApSsid[] = "oinkyou";
 static constexpr const char kApPassword[] = "oinkyou123";

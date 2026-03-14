@@ -9,7 +9,7 @@ OinkSpy is a customized `flock-you` fork adapted for the `Seeed Studio XIAO ESP3
 - Platform: `PlatformIO + Arduino`
 - Target board: `seeed_xiao_esp32s3`
 - Current firmware shape: single-file prototype in `src/main.cpp`
-- Confirmed features: BLE detection, Raven UUID heuristics, OLED status, buzzer alerts, Wi-Fi AP dashboard, phone GPS tagging, CSV/JSON/KML export, SPIFFS session persistence
+- Confirmed features: BLE detection, Raven UUID heuristics, OLED status, buzzer alerts, Wi-Fi AP dashboard, phone GPS tagging, fixed-port Grove GNSS, CSV/JSON/KML export, SPIFFS session persistence
 - In-progress productization: WSL-first development workflow, XIAO Expansion Board integration, SD logging, physical controls, power management, OTA
 
 ## Detection Coverage
@@ -38,8 +38,8 @@ Current and planned board mapping:
 | `D3` | `GPIO4` | Expansion board buzzer |
 | `D4` | `GPIO5` | I2C SDA for OLED and optional RTC |
 | `D5` | `GPIO6` | I2C SCL for OLED and optional RTC |
-| `D6` | `GPIO43` | UART TX for optional Grove GPS |
-| `D7` | `GPIO44` | UART RX for optional Grove GPS |
+| `D6` | `GPIO43` | GNSS UART RX |
+| `D7` | `GPIO44` | GNSS UART TX |
 | `D8` | `GPIO7` | SPI SCK for MicroSD |
 | `D9` | `GPIO8` | SPI MISO for MicroSD |
 | `D10` | `GPIO9` | SPI MOSI for MicroSD |
@@ -127,7 +127,7 @@ Planned additions for the plug-and-play build:
 - a small RTC wrapper for optional `PCF8563` support
 
 ## GPS Wardriving
-The current dashboard can tag detections using your phone’s GPS.
+OinkSpy now supports both browser GPS tagging and the Seeed Studio Grove - GPS (L76K) GNSS module over UART at `9600 8N1`.
 
 On Android Chrome:
 
@@ -140,7 +140,61 @@ On Android Chrome:
 
 Note: iOS Safari blocks geolocation over HTTP.
 
-Future hardware support will also target Grove UART GPS on `D6/D7`.
+### Grove GNSS hardware
+Supported today:
+
+- Board/core: `Seeed Studio XIAO ESP32-S3` with `PlatformIO + Arduino`
+- GNSS parser: `TinyGPS++`
+- UART transport: `HardwareSerial(1)` with ESP32 pin remap
+
+Connect the Grove - GPS (L76K) module to the fixed Grove UART wiring used by this firmware:
+
+- `D6` = RX
+- `D7` = TX
+
+There is no runtime sweep or auto-detect logic. The firmware opens one known UART mapping and continuously parses NMEA from that fixed port.
+
+### GNSS override options
+Runtime config key in `config/oinkspy.json`:
+
+- `gnss_enabled`
+
+Compile-time overrides in `platformio.ini`:
+
+```ini
+build_flags =
+    -DOINK_FEATURE_GNSS=1
+    -DOINK_GNSS_BAUD=9600
+    -DOINK_GNSS_UART_RX=D6
+    -DOINK_GNSS_UART_TX=D7
+    -DOINK_GNSS_HW_SERIAL_NUM=1
+```
+
+Use the build flags above if your board/core needs a different fixed UART mapping.
+
+### Indicators
+
+- `GPS: seen` appears on the OLED and in serial status once valid NMEA has been parsed.
+- `Sats: N` shows the current TinyGPS++ satellite count. Until that field is valid, the OLED shows `Sats: -`.
+- `LED_BUILTIN` follows GNSS visibility by default: off before NMEA is seen, on after valid GNSS traffic is parsed.
+
+### Serial and API controls
+Serial commands:
+
+- `gnss status`
+
+HTTP status endpoint:
+
+- `GET /api/gnss`
+
+Example serial output:
+
+```text
+[OINK-YOU] GNSS fixed UART ready: U1 RX=D6 TX=D7 baud=9600
+[OINK-YOU] GPS: seen on U1 RX=D6 TX=D7 @ 9600
+[OINK-YOU] Sats: 7
+GNSS: port=U1 rx=D6 tx=D7 baud=9600 GPS: seen Sats: 7 Fix: yes HDOP: 0.90 last_ms=412
+```
 
 ## Flask Companion Dashboard
 A desktop analysis dashboard is available in `api/`.
@@ -170,5 +224,5 @@ Always comply with local laws regarding wireless scanning and radio use.
 ## SD Config
 Place a JSON config file on the SD card at `config/oinkspy.json`.
 A starter template is included at `config.oinkspy.example.json`.
-Current supported keys: `ap_ssid`, `ap_password`, `buzzer_enabled`, `ble_scan_interval_ms`, `standalone_scan_duration_sec`, `companion_scan_duration_sec`, `save_interval_ms`, `serial_timeout_ms`, `sd_logging_enabled`, `sd_json_enabled`, `sd_csv_enabled`.
+Current supported keys: `ap_ssid`, `ap_password`, `buzzer_enabled`, `ble_scan_interval_ms`, `standalone_scan_duration_sec`, `companion_scan_duration_sec`, `save_interval_ms`, `serial_timeout_ms`, `sd_logging_enabled`, `sd_json_enabled`, `sd_csv_enabled`, `gnss_enabled`.
 

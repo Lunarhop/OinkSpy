@@ -5,10 +5,12 @@
 #include <ESPAsyncWebServer.h>
 #include <SPIFFS.h>
 #include <WiFi.h>
+#include <ctype.h>
 #include <cstring>
 
 #include "oink_board.h"
 #include "oink_config.h"
+#include "oink_gnss.h"
 #include "oink_log.h"
 #include "oink_scan.h"
 #include "oink_settings.h"
@@ -318,6 +320,11 @@ void setupServer() {
                               request->hasParam("acc") ? request->getParam("acc")->value().toFloat() : 0.0f);
         request->send(200, "application/json", "{\"status\":\"ok\"}");
     });
+    gServer.on("/api/gnss", HTTP_GET, [](AsyncWebServerRequest* request) {
+        AsyncResponseStream* resp = request->beginResponseStream("application/json");
+        oink::gnss::writeStatusJson(*resp);
+        request->send(resp);
+    });
 
     gServer.on("/api/patterns", HTTP_GET, [](AsyncWebServerRequest* request) {
         AsyncResponseStream* resp = request->beginResponseStream("application/json");
@@ -521,10 +528,46 @@ void processControlEvents() {
         }
     }
 }
+
+char gSerialLine[96] = "";
+size_t gSerialLineLength = 0;
+
+void handleSerialByte(char c) {
+    if (c == '\r' || c == '\n') {
+        if (gSerialLineLength == 0) {
+            return;
+        }
+        gSerialLine[gSerialLineLength] = '\0';
+        if (!oink::gnss::handleCommand(gSerialLine, Serial)) {
+            printf("[OINK-YOU] Serial command ignored: %s\n", gSerialLine);
+        }
+        gSerialLineLength = 0;
+        gSerialLine[0] = '\0';
+        return;
+    }
+
+    if (c == '\b' || c == 127) {
+        if (gSerialLineLength > 0) {
+            --gSerialLineLength;
+            gSerialLine[gSerialLineLength] = '\0';
+        }
+        return;
+    }
+
+    if (!isprint(static_cast<unsigned char>(c)) || gSerialLineLength + 1 >= sizeof(gSerialLine)) {
+        return;
+    }
+
+    gSerialLine[gSerialLineLength++] = c;
+}
+
 void pollSerialHost() {
     if (Serial.available()) {
         while (Serial.available()) {
-            Serial.read();
+            int value = Serial.read();
+            if (value >= 0) {
+                handleSerialByte(static_cast<char>(value));
+            }
         }
         gApp.lastSerialHeartbeat = millis();
         if (!gApp.serialHostConnected) {
@@ -553,6 +596,7 @@ void setup() {
     oink::log::beginStorage();
     oink::settings::load();
     oink::timeutil::begin();
+    oink::gnss::begin();
     oink::log::prepareSdLogs();
 
     printf("\n========================================\n");
@@ -574,16 +618,18 @@ void setup() {
 
     setupServer();
 
-    printf("[OINK-YOU] Board map: button D1, SD CS D2, buzzer D3, OLED SDA/SCL D4/D5, GPS UART D6/D7, SPI D8-D10\n");
+    printf("[OINK-YOU] Board map: button D1, SD CS D2, buzzer D3, OLED SDA/SCL D4/D5, GNSS fixed UART D6/D7, SPI D8-D10\n");
     printf("[OINK-YOU] Device ID: %s, boot #%lu\n", oink::settings::deviceId(), oink::settings::bootCount());
     printf("[OINK-YOU] SD logging: %s\n", gApp.sdReady && gApp.runtimeConfig.sdLoggingEnabled ? "ENABLED" : "DISABLED");
     printf("[OINK-YOU] Log worker: %s\n", gApp.logWorkerReady ? "READY" : "DISABLED");
     printf("[OINK-YOU] Time source: %s (%s)\n", oink::timeutil::timeSourceLabel(), gApp.dayToken);
+    oink::gnss::printStatus(Serial);
     if (gApp.sdReady && gApp.runtimeConfig.sdLoggingEnabled) {
         printf("[OINK-YOU] SD session CSV: %s\n", oink::log::sessionCsvPath());
         printf("[OINK-YOU] SD session JSONL: %s\n", oink::log::sessionJsonlPath());
     }
     printf("[OINK-YOU] Controls: short=scan toggle, long=audio mode, double=bookmark\n");
+    printf("[OINK-YOU] Serial commands: gnss status\n");
     printf("[OINK-YOU] Detection methods: MAC prefix, device name, manufacturer ID, Raven UUID\n");
     printf("[OINK-YOU] Dashboard: http://192.168.4.1\n");
     printf("[OINK-YOU] Ready - BLE GATT + AP mode + OLED\n\n");
@@ -598,6 +644,7 @@ void loop() {
     processControlEvents();
     oink::board::serviceUi();
     pollSerialHost();
+    oink::gnss::update();
 
     if (gApp.companionChangePending) {
         gApp.companionChangePending = false;

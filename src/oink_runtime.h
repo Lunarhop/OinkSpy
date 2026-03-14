@@ -20,6 +20,7 @@ struct RuntimeConfig {
     bool sdLoggingEnabled;
     bool sdJsonEnabled;
     bool sdCsvEnabled;
+    bool gnssEnabled;
 };
 
 } // namespace oink
