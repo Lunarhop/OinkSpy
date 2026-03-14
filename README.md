@@ -12,6 +12,27 @@ OinkSpy is a customized `flock-you` fork adapted for the `Seeed Studio XIAO ESP3
 - Confirmed features: BLE detection, Raven UUID heuristics, OLED status, buzzer alerts, Wi-Fi AP dashboard, phone GPS tagging, fixed-port Grove GNSS, CSV/JSON/KML export, SPIFFS session persistence
 - In-progress productization: WSL-first development workflow, XIAO Expansion Board integration, SD logging, physical controls, power management, OTA
 
+## 60-Second Quickstart
+For a fast smoke test, build the firmware, then launch the companion dashboard:
+
+```bash
+git clone https://github.com/Lunarhop/OinkSpy
+cd OinkSpy
+pio run
+cd api
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+python flockyou.py
+```
+
+Expected results:
+
+- `pio run` completes without board-package errors.
+- `python flockyou.py` starts the Flask dashboard on `http://localhost:5000`.
+- The device captive portal becomes available at `http://192.168.4.1` after boot.
+- The dashboard can be exercised with either live serial data or imported JSON, CSV, or KML exports.
+
 ## Detection Coverage
 OinkSpy currently detects likely surveillance hardware using BLE heuristics:
 
@@ -207,6 +228,13 @@ python flockyou.py
 
 Then open `http://localhost:5000`.
 
+Common first-run flow:
+
+1. Connect the XIAO board over USB and open the dashboard.
+2. Choose the OinkSpy serial port and click `Connect`.
+3. Optional: connect a USB GPS receiver for location-tagged detections.
+4. If hardware is offline, use `Import` to load JSON, CSV, or KML exported by the device.
+
 ## Relationship to Flock-You
 OinkSpy is a custom fork of the upstream project:
 
@@ -221,8 +249,50 @@ This project is intended for:
 - educational RF experimentation
 
 Always comply with local laws regarding wireless scanning and radio use.
-## SD Config
+## Configuration
+
+### Precedence
+
+| Surface | Highest precedence | Then | Defaults |
+| --- | --- | --- | --- |
+| Firmware runtime | SD card `config/oinkspy.json` | compiled defaults in `src/oink_settings.cpp` | built-in defaults |
+| Firmware GNSS wiring | `platformio.ini` `build_flags` | source defaults | built-in defaults |
+| Companion serial discovery | `OINKSPY_SERIAL_PORTS` | pySerial / fallback glob scan | empty list |
+| Companion UI settings | saved `api/data/settings.json` | in-memory defaults | `gps_port=""`, `flock_port=""`, `filter="all"` |
+| Flask secret key | `SECRET_KEY` env var | dev fallback in `api/flockyou.py` | `flockyou_dev_key_2024` |
+
+### Firmware SD Config
+
 Place a JSON config file on the SD card at `config/oinkspy.json`.
 A starter template is included at `config.oinkspy.example.json`.
-Current supported keys: `ap_ssid`, `ap_password`, `buzzer_enabled`, `ble_scan_interval_ms`, `standalone_scan_duration_sec`, `companion_scan_duration_sec`, `save_interval_ms`, `serial_timeout_ms`, `sd_logging_enabled`, `sd_json_enabled`, `sd_csv_enabled`, `gnss_enabled`.
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `ap_ssid` | `oinkyou` | Soft AP name shown during phone setup |
+| `ap_password` | `oinkyou123` | Captive portal password |
+| `timezone` | `UTC0` | POSIX TZ string for timestamps |
+| `ntp_enabled` | `true` | Enables network time sync |
+| `ntp_server_1` | `pool.ntp.org` | Primary NTP server |
+| `ntp_server_2` | `time.nist.gov` | Secondary NTP server |
+| `buzzer_enabled` | `true` | Boot and alert audio feedback |
+| `ble_scan_interval_ms` | `3000` | Time between scans |
+| `standalone_scan_duration_sec` | `2` | Scan duration for AP-only mode |
+| `companion_scan_duration_sec` | `3` | Scan duration when paired with companion tooling |
+| `save_interval_ms` | `15000` | Session persistence cadence |
+| `serial_timeout_ms` | `5000` | Serial command timeout |
+| `sd_logging_enabled` | `true` | Master switch for SD logging |
+| `sd_json_enabled` | `true` | Write JSONL log files |
+| `sd_csv_enabled` | `true` | Write CSV log files |
+| `gnss_enabled` | `true` when compiled in | Enables Grove GNSS reader |
+
+## Troubleshooting
+
+| Symptom | Likely cause | What to try |
+| --- | --- | --- |
+| `pio run` fails inside WSL | PlatformIO not installed in WSL or package cache issue | Reinstall `PlatformIO Core` in WSL and rerun `pio run` from the repo root |
+| Board uploads fail from WSL | USB passthrough instability | Build in WSL, then upload from Windows PlatformIO against the `COM` port |
+| Dashboard shows no serial ports | Data-only USB cable missing, board busy, or pySerial enumeration failed | Refresh ports, reconnect USB, close other serial monitors, or set `OINKSPY_SERIAL_PORTS=/dev/ttyUSB0,/dev/ttyACM0` |
+| Phone GPS badge stays on `HTTP` | Browser blocks geolocation on insecure origins | On Android Chrome, add `http://192.168.4.1` to `chrome://flags` insecure origins; iOS Safari will not allow GPS over HTTP |
+| Device portal shows `Storage: SD missing` | SD card absent or not mounted | Reseat the SD card, confirm the chip-select wiring on `D2`, and reboot |
+| KML export has no points | Detections were not GPS tagged | Connect browser GPS or Grove GNSS before scanning, then export again |
 

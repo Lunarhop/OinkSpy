@@ -36,7 +36,7 @@ A Flask-based web dashboard for real-time monitoring and analysis of Flock Safet
 
 2. **Run the application**:
    ```bash
-   python app.py
+   python flockyou.py
    ```
 
 3. **Access the dashboard**:
@@ -49,7 +49,7 @@ A Flask-based web dashboard for real-time monitoring and analysis of Flock Safet
 2. **Connect your Flock You device** and ensure it's sending JSON data
 3. **View detections** in real-time on the dashboard
 4. **Filter detections** using the dropdown menu
-5. **Export data** using the export buttons
+5. **Export data** using the export buttons, or import saved JSON/CSV/KML to test the UI without hardware
 
 ### GPS Setup
 1. **Connect GPS dongle** to your computer via USB

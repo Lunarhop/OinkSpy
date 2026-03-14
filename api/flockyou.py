@@ -45,6 +45,9 @@ serial_queue = queue.Queue()
 next_detection_id = 1  # Unique ID counter
 settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
 
+DEFAULT_SETTINGS = settings.copy()
+ALLOWED_FILTERS = {'all', 'probe_request', 'beacon', 'mac_prefix', 'device_name'}
+
 SERIAL_PORT_GLOBS = (
     '/dev/ttyUSB*',
     '/dev/ttyACM*',
@@ -95,6 +98,7 @@ def load_settings():
         if SETTINGS_FILE.exists():
             with open(SETTINGS_FILE, 'r') as f:
                 settings.update(json.load(f))
+            settings['filter'] = normalize_filter(settings.get('filter'))
             print(f"Loaded settings: {settings}")
     except Exception as e:
         print(f"Error loading settings: {e}")
@@ -107,6 +111,56 @@ def save_settings():
         print(f"Saved settings: {settings}")
     except Exception as e:
         print(f"Error saving settings: {e}")
+
+def json_error(message, status_code=400, hint=None, **extra):
+    payload = {
+        'status': 'error',
+        'message': message,
+    }
+    if hint:
+        payload['hint'] = hint
+    payload.update(extra)
+    return jsonify(payload), status_code
+
+def request_json_object():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return None, json_error(
+            'Request body must be a JSON object.',
+            hint='Send application/json with key/value pairs instead of form or plain text data.'
+        )
+    return data, None
+
+def normalize_filter(value):
+    if value in ALLOWED_FILTERS:
+        return value
+    return DEFAULT_SETTINGS['filter']
+
+def build_status_payload():
+    available_ports = discover_serial_ports()
+    return {
+        'gps_connected': gps_enabled,
+        'gps_port': serial_connection.port if serial_connection else None,
+        'gps_ports_available': len(available_ports),
+        'flock_connected': flock_device_connected,
+        'flock_port': flock_device_port,
+        'flock_ports_available': len(available_ports),
+        'session_detection_count': len(detections),
+        'cumulative_detection_count': len(cumulative_detections),
+        'selected_filter': normalize_filter(settings.get('filter')),
+        'recommended_action': (
+            'Connect the OinkSpy sniffer to start streaming detections.'
+            if not flock_device_connected
+            else 'Connect GPS for location tagging.'
+            if not gps_enabled
+            else 'Monitoring live detections.'
+        ),
+        'quickstart': [
+            'Select the OinkSpy serial port and connect the sniffer.',
+            'Optional: connect a GPS receiver for tagged exports.',
+            'Use Import to replay JSON, CSV, or KML from the device.'
+        ]
+    }
 
 def build_port_info(device, description, manufacturer='Unknown', product='Unknown', vid=None, pid=None):
     """Return a dashboard-friendly serial port record."""
@@ -717,6 +771,41 @@ def attempt_reconnect_gps():
 def index():
     return render_template('index.html')
 
+@app.route('/api/help', methods=['GET'])
+def get_help():
+    """Return a compact setup guide for the companion dashboard."""
+    return jsonify({
+        'status': 'success',
+        'app': 'OinkSpy companion dashboard',
+        'quickstart': [
+            'Start the Flask app, then open the dashboard in your browser.',
+            'Choose the OinkSpy serial port and click Connect.',
+            'Optional: connect GPS, or import JSON/CSV/KML exports from the device.'
+        ],
+        'configuration': {
+            'settings_file': str(SETTINGS_FILE),
+            'settings_keys': sorted(DEFAULT_SETTINGS.keys()),
+            'filter_values': sorted(ALLOWED_FILTERS),
+        },
+        'endpoints': {
+            'status': '/api/status',
+            'detections': '/api/detections',
+            'gps_ports': '/api/gps/ports',
+            'flock_ports': '/api/flock/ports',
+            'settings': '/api/settings',
+            'import_json': '/api/import/json',
+            'import_csv': '/api/import/csv',
+            'import_kml': '/api/import/kml',
+            'export_csv': '/api/export/csv',
+            'export_kml': '/api/export/kml',
+        },
+        'troubleshooting': [
+            'If no ports appear, refresh the port list and confirm your USB cable carries data.',
+            'If pySerial cannot enumerate ports, set OINKSPY_SERIAL_PORTS=/dev/ttyUSB0,/dev/ttyACM0 to seed the fallback scanner.',
+            'Use the Import menu to validate the dashboard even when the hardware is offline.'
+        ]
+    })
+
 @app.route('/api/detections', methods=['GET'])
 def get_detections():
     """Get all detections with optional filtering"""
@@ -740,8 +829,21 @@ def get_detections():
 def add_detection():
     """Add a new detection from serial data"""
     global detections, gps_data
-    
-    data = request.json
+
+    data, error_response = request_json_object()
+    if error_response:
+        return error_response
+
+    if not data.get('mac_address'):
+        return json_error(
+            'Detection payload is missing mac_address.',
+            hint='Include a stable device MAC address so repeated detections can be grouped correctly.'
+        )
+
+    if not data.get('protocol'):
+        data['protocol'] = 'unknown'
+    if not data.get('detection_method'):
+        data['detection_method'] = 'unknown'
     
     # Add GPS data if available
     if gps_data and gps_data.get('fix_quality') > 0:
@@ -765,15 +867,23 @@ def add_detection():
     # Emit to connected clients
     socketio.emit('new_detection', data)
     
-    return jsonify({'status': 'success', 'id': len(detections)})
+    return jsonify({'status': 'success', 'id': len(detections), 'message': 'Detection recorded'})
 
 @app.route('/api/gps/connect', methods=['POST'])
 def connect_gps():
     """Connect to GPS dongle"""
     global serial_connection, gps_enabled
-    
-    data = request.json
-    port = data.get('port')
+
+    data, error_response = request_json_object()
+    if error_response:
+        return error_response
+
+    port = (data.get('port') or '').strip()
+    if not port:
+        return json_error(
+            'GPS port is required.',
+            hint='Choose a port from the dropdown or set OINKSPY_SERIAL_PORTS when auto-discovery misses your device.'
+        )
     
     try:
         if serial_connection:
@@ -789,7 +899,10 @@ def connect_gps():
         
         return jsonify({'status': 'success', 'message': f'Connected to {port}'})
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 400
+        return json_error(
+            f'Failed to connect to GPS on {port}: {str(e)}',
+            hint='Double-check the selected port, baud rate, and whether another app already owns the device.'
+        )
 
 @app.route('/api/gps/disconnect', methods=['POST'])
 def disconnect_gps():
@@ -808,9 +921,17 @@ def disconnect_gps():
 def connect_flock():
     """Connect to Flock You device"""
     global flock_device_connected, flock_device_port, flock_serial_connection
-    
-    data = request.json
-    port = data.get('port')
+
+    data, error_response = request_json_object()
+    if error_response:
+        return error_response
+
+    port = (data.get('port') or '').strip()
+    if not port:
+        return json_error(
+            'OinkSpy sniffer port is required.',
+            hint='Choose the ESP32 serial port first, then click Connect.'
+        )
     
     try:
         # Create persistent connection to the port
@@ -825,7 +946,10 @@ def connect_flock():
         
         return jsonify({'status': 'success', 'message': f'Connected to Flock You device on {port}'})
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 400
+        return json_error(
+            f'Failed to connect to OinkSpy on {port}: {str(e)}',
+            hint='Confirm the board is powered, the correct serial port is selected, and no monitor is already open.'
+        )
 
 @app.route('/api/flock/disconnect', methods=['POST'])
 def disconnect_flock():
@@ -845,12 +969,7 @@ def disconnect_flock():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """Get connection status of both devices"""
-    return jsonify({
-        'gps_connected': gps_enabled,
-        'gps_port': serial_connection.port if serial_connection else None,
-        'flock_connected': flock_device_connected,
-        'flock_port': flock_device_port
-    })
+    return jsonify(build_status_payload())
 
 @app.route('/api/gps/ports', methods=['GET'])
 def get_gps_ports():
@@ -1320,14 +1439,22 @@ def update_detection_alias():
 @app.route('/api/settings', methods=['GET'])
 def get_settings():
     """Get current settings"""
-    return jsonify(settings)
+    normalized = dict(settings)
+    normalized['filter'] = normalize_filter(normalized.get('filter'))
+    return jsonify(normalized)
 
 @app.route('/api/settings', methods=['POST'])
 def update_settings():
     """Update settings"""
     global settings
-    data = request.json
-    settings.update(data)
+    data, error_response = request_json_object()
+    if error_response:
+        return error_response
+
+    updated_settings = dict(settings)
+    updated_settings.update(data)
+    updated_settings['filter'] = normalize_filter(updated_settings.get('filter'))
+    settings = updated_settings
     save_settings()
     return jsonify({'status': 'success', 'settings': settings})
 

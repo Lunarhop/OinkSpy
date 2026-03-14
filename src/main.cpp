@@ -69,6 +69,14 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 .ev .lb{display:inline-block;margin-top:6px;padding:3px 6px;border-radius:999px;background:rgba(251,113,133,.15);font-size:11px}
 .ev .meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;font-size:11px}
 .ev .meta span{background:rgba(251,113,133,.1);padding:3px 6px;border-radius:4px}
+.guide{background:rgba(72,28,43,.42);border:1px solid rgba(251,113,133,.2);border-radius:8px;padding:10px;margin-bottom:10px}
+.guide .ttl{font-size:11px;letter-spacing:1px;color:#fda4af;margin-bottom:6px}
+.guide .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px}
+.guide .it{background:rgba(251,113,133,.08);border:1px solid rgba(251,113,133,.14);border-radius:6px;padding:8px}
+.guide .k{font-size:10px;color:#fbcfe8;letter-spacing:1px;margin-bottom:4px}
+.guide .v{font-size:12px;line-height:1.35}
+.guide .sys{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:11px}
+.guide .sys span{background:rgba(251,113,133,.1);padding:4px 6px;border-radius:999px}
 </style></head><body>
 <div class="hd"><h1>OINKSPY <span class="pig">(^oo^)</span></h1><div class="sub">Pig-themed surveillance detector &bull; wardriving + GPS</div></div>
 <div class="st">
@@ -85,6 +93,19 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 </div>
 <div class="cn">
 <div class="pn a" id="p0">
+<div class="guide">
+<div class="ttl">FIELD CHECKLIST</div>
+<div class="grid">
+<div class="it"><div class="k">CONNECT</div><div class="v">Join the OinkSpy AP and keep this page open while the detector scans.</div></div>
+<div class="it"><div class="k">GPS</div><div class="v" id="gHint">Tap GPS for browser tagging, or use Grove GNSS on D6/D7 for on-device fixes.</div></div>
+<div class="it"><div class="k">EXPORT</div><div class="v">Open Tools to download JSON, CSV, or KML once detections start rolling in.</div></div>
+</div>
+<div class="sys">
+<span id="sysClock">Time: checking</span>
+<span id="sysStore">Storage: checking</span>
+<span id="sysGnss">GNSS: checking</span>
+</div>
+</div>
 <div id="dL"><div class="empty">Snout up, scanning for surveillance gear...<br>BLE active on all channels</div></div>
 </div>
 <div class="pn" id="p1"><div id="hL"><div class="empty">Loading prior session...</div></div></div>
@@ -109,15 +130,17 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 </div>
 <script>
 let D=[],H=[],E=[];
+function setTxt(id,text,color){let el=document.getElementById(id);if(!el)return;el.textContent=text;if(color)el.style.color=color;}
 function tab(i,el){document.querySelectorAll('.tb button').forEach(b=>b.classList.remove('a'));document.querySelectorAll('.pn').forEach(p=>p.classList.remove('a'));el.classList.add('a');document.getElementById('p'+i).classList.add('a');if(i===1&&!window._hL)loadHistory();if(i===2&&!window._pL)loadPat();if(i===3)loadEvents();}
-function refresh(){fetch('/api/detections').then(r=>r.json()).then(d=>{D=d;render();stats();}).catch(()=>{});}
+function refresh(){fetch('/api/detections').then(r=>r.json()).then(d=>{D=d;render();stats();}).catch(()=>{document.getElementById('dL').innerHTML='<div class="empty">Live detections unavailable right now.<br>Stay connected to the OinkSpy AP and refresh in a moment.</div>';});}
 function render(){const el=document.getElementById('dL');if(!D.length){el.innerHTML='<div class="empty">Snout up, scanning for surveillance gear...<br>BLE active on all channels</div>';return;} D.sort((a,b)=>b.last-a.last);el.innerHTML=D.map(card).join('');}
 function stats(){document.getElementById('sT').textContent=D.length;document.getElementById('sR').textContent=D.filter(d=>d.raven).length; fetch('/api/stats').then(r=>r.json()).then(s=>{if(s.gps_valid){setGPSBadge(s.gps_tagged+'/'+s.total,'#22c55e','GPS-tagged detections in this session');return;} if(_gOk){setGPSBadge('OK','#22c55e','GPS feed active');return;} if(!window.isSecureContext){setGPSBadge('HTTP','#f59e0b','GPS needs HTTPS or the Android insecure-origin override for http://192.168.4.1');return;} if(_gPerm==='granted'){setGPSBadge(_gW!==null?'AUTO':'READY','#22c55e',_gW!==null?'Permission already granted; waiting for GPS fix':'Location permission granted');return;} if(_gPerm==='denied'){setGPSBadge('BLOCK','#ef4444','Location blocked in browser settings');return;} setGPSBadge(_gTried?'WAIT':'TAP','#facc15',_gTried?'Waiting for GPS permission or fix':'Tap GPS to allow location');}).catch(()=>{});}
 function card(d){return '<div class="det"><div class="mac">'+d.mac+(d.name?'<span class="nm">'+d.name+'</span>':'')+'</div><div class="inf"><span>RSSI: '+d.rssi+'</span><span>'+d.method+'</span><span style="color:#fda4af;font-weight:bold">&times;'+d.count+'</span>'+(d.raven?'<span class="rv">RAVEN '+d.fw+'</span>':'')+(d.gps?'<span style="color:#22c55e">&#9673; '+d.gps.lat.toFixed(5)+','+d.gps.lon.toFixed(5)+'</span>':'<span style="color:#666">no gps</span>')+'</div></div>';}
 function eventCard(e){let title=e.record_type==='bookmark'?'BOOKMARK':'DETECTION';let label=e.label?'<div class="lb">'+e.label+'</div>':'';let gps=e.gps?'<span>GPS '+e.gps.lat.toFixed(5)+','+e.gps.lon.toFixed(5)+'</span>':'';let who=e.mac?'<span>'+e.mac+(e.name?' '+e.name:'')+'</span>':'';let sig=e.record_type==='detection'?'<span>RSSI '+e.rssi+'</span><span>'+e.method+'</span><span>&times;'+e.count+'</span>':'';let rv=e.is_raven?'<span>RAVEN '+e.raven_fw+'</span>':'';return '<div class="ev"><div class="hdx"><span class="tp">'+title+'</span><span>'+(e.iso8601||('ms '+e.millis))+'</span></div>'+label+'<div class="meta"><span>boot '+e.boot_count+'</span><span>'+e.time_source+'</span>'+who+sig+rv+gps+'</div></div>';}
 function loadHistory(){fetch('/api/history').then(r=>r.json()).then(d=>{H=d;let el=document.getElementById('hL');if(!H.length){el.innerHTML='<div class="empty">No prior session data</div>';return;} H.sort((a,b)=>b.last-a.last);el.innerHTML='<div style="font-size:11px;color:#f9a8d4;margin-bottom:8px">'+H.length+' detections from prior session</div>'+H.map(card).join('');window._hL=1;}).catch(()=>{document.getElementById('hL').innerHTML='<div class="empty">No prior session data</div>';});}
-function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{let h=''; h+='<div class="pg"><h3>Oink MAC Prefixes ('+p.macs.length+')</h3><div class="it">'+p.macs.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>Contract Mfr MACs ('+p.macs_mfr.length+')</h3><div class="it">'+p.macs_mfr.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>SoundThinking MACs ('+p.macs_soundthinking.length+')</h3><div class="it">'+p.macs_soundthinking.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>BLE Device Names ('+p.names.length+')</h3><div class="it">'+p.names.map(n=>'<span>'+n+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>BLE Manufacturer IDs ('+p.mfr.length+')</h3><div class="it">'+p.mfr.map(m=>'<span>0x'+m.toString(16).toUpperCase().padStart(4,'0')+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>Raven UUIDs ('+p.raven.length+')</h3><div class="it">'+p.raven.map(u=>'<span style="font-size:8px">'+u+'</span>').join('')+'</div></div>'; document.getElementById('pC').innerHTML=h;window._pL=1;}).catch(()=>{});}
+function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{let h=''; h+='<div class="pg"><h3>Oink MAC Prefixes ('+p.macs.length+')</h3><div class="it">'+p.macs.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>Contract Mfr MACs ('+p.macs_mfr.length+')</h3><div class="it">'+p.macs_mfr.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>SoundThinking MACs ('+p.macs_soundthinking.length+')</h3><div class="it">'+p.macs_soundthinking.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>BLE Device Names ('+p.names.length+')</h3><div class="it">'+p.names.map(n=>'<span>'+n+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>BLE Manufacturer IDs ('+p.mfr.length+')</h3><div class="it">'+p.mfr.map(m=>'<span>0x'+m.toString(16).toUpperCase().padStart(4,'0')+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>Raven UUIDs ('+p.raven.length+')</h3><div class="it">'+p.raven.map(u=>'<span style="font-size:8px">'+u+'</span>').join('')+'</div></div>'; document.getElementById('pC').innerHTML=h;window._pL=1;}).catch(()=>{document.getElementById('pC').innerHTML='<div class="empty">Detection database unavailable</div>';});}
 function loadEvents(){fetch('/api/events').then(r=>r.json()).then(d=>{E=d;let el=document.getElementById('eL');if(!E.length){el.innerHTML='<div class="empty">No recent events yet</div>';return;} el.innerHTML=E.map(eventCard).join('');}).catch(()=>{document.getElementById('eL').innerHTML='<div class="empty">Recent events unavailable</div>';});}
+function loadPortalMeta(){fetch('/api/time').then(r=>r.json()).then(t=>{setTxt('sysClock',t.synced?'Time: '+t.time_source+' '+t.iso8601:'Time: waiting for sync',t.synced?'#22c55e':'#facc15');}).catch(()=>{setTxt('sysClock','Time: unavailable','#ef4444');});fetch('/api/storage').then(r=>r.json()).then(s=>{let txt=s.sd_ready?'Storage: SD ready':'Storage: SD missing';if(s.log_events_dropped>0)txt+=' drops:'+s.log_events_dropped;setTxt('sysStore',txt,s.sd_ready&&s.sd_logging_enabled?'#22c55e':'#f59e0b');}).catch(()=>{setTxt('sysStore','Storage: unavailable','#ef4444');});fetch('/api/gnss').then(r=>r.json()).then(g=>{let txt=!g.enabled?'GNSS: off':g.has_fix?'GNSS: fix '+g.satellites+' sats':g.gps_seen?'GNSS: seen, no fix yet':'GNSS: waiting on D6/D7';setTxt('sysGnss',txt,g.has_fix?'#22c55e':g.gps_seen?'#facc15':'#f9a8d4');}).catch(()=>{setTxt('sysGnss','GNSS: unavailable','#ef4444');});}
 let _gW=null,_gOk=false,_gTried=false,_gPerm='unknown',_gPermStatus=null;
 function setGPSBadge(text,color,title){let g=document.getElementById('sG');g.textContent=text;g.style.color=color||'#fda4af';g.title=title||'';}
 function stopGPS(){if(_gW!==null&&navigator.geolocation){navigator.geolocation.clearWatch(_gW);} _gW=null;}
@@ -128,7 +151,7 @@ function applyGPSPermission(state,autoStart){_gPerm=state;if(state==='granted'){
 async function bootGPS(){if(!navigator.geolocation){setGPSBadge('N/A','#ef4444','GPS not available in this browser');return;} if(!window.isSecureContext){setGPSBadge('HTTP','#f59e0b','GPS needs HTTPS or the Android insecure-origin override for http://192.168.4.1');return;} if(!navigator.permissions||!navigator.permissions.query){setGPSBadge('TAP','#facc15','Tap GPS to request location access');return;} try{_gPermStatus=await navigator.permissions.query({name:'geolocation'});applyGPSPermission(_gPermStatus.state,true);let onChange=()=>applyGPSPermission(_gPermStatus.state,true);if(typeof _gPermStatus.addEventListener==='function'){_gPermStatus.addEventListener('change',onChange);} else {_gPermStatus.onchange=onChange;}}catch(err){console.log('Geolocation permission query failed:',err);setGPSBadge('TAP','#facc15','Tap GPS to request location access');}}
 function reqGPS(){if(!navigator.geolocation){alert('GPS not available in this browser.');return;} _gTried=true; if(!window.isSecureContext){setGPSBadge('HTTP','#f59e0b','GPS needs HTTPS or the Android insecure-origin override for http://192.168.4.1');alert('GPS requires a secure context (HTTPS). This HTTP page may not get GPS permission.\n\nAndroid Chrome: try chrome://flags and enable "Insecure origins treated as secure", add http://192.168.4.1\n\niPhone: GPS will not work over HTTP.');return;} if(_gPerm==='denied'){setGPSBadge('BLOCK','#ef4444','Location blocked in browser settings');alert('GPS access is blocked in browser settings. Re-enable Location for this site and reload the dashboard.');return;} startGPS(false);}
 function syncClock(){fetch('/api/time?epoch='+Math.floor(Date.now()/1000)).catch(()=>{});}
-refresh();loadEvents();syncClock();bootGPS();setInterval(refresh,2500);setInterval(loadEvents,3000);setInterval(syncClock,60000);
+refresh();loadEvents();loadPortalMeta();syncClock();bootGPS();setInterval(refresh,2500);setInterval(loadEvents,3000);setInterval(loadPortalMeta,5000);setInterval(syncClock,60000);
 </script></body></html>
 )rawliteral";
 
