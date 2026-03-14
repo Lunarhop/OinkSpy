@@ -1,11 +1,15 @@
 #include "oink_scan.h"
 
+#include <ArduinoJson.h>
 #include <NimBLEAdvertisedDevice.h>
 #include <NimBLEDevice.h>
 #include <NimBLEScan.h>
+#include <Preferences.h>
 #include <WiFi.h>
+#include <ctype.h>
 #include <cstring>
 #include <strings.h>
+#include <vector>
 
 #include "oink_board.h"
 #include "oink_config.h"
@@ -15,10 +19,118 @@
 namespace {
 
 bool gScanningEnabled = true;
+constexpr const char* kPrefsNamespace = "oinkspy";
+constexpr const char* kPatternPrefsKey = "detect_db";
+constexpr size_t kMaxStringEntries = 64;
+constexpr size_t kMaxManufacturerEntries = 32;
+constexpr size_t kMaxStringLength = 64;
 
-bool checkPrefix(const char* value, const char* const* patterns, size_t count) {
+struct StringPatternGroup {
+    const char* jsonKey;
+    const char* label;
+    bool enabled = true;
+    std::vector<String> values;
+
+    StringPatternGroup(const char* key, const char* name) : jsonKey(key), label(name) {}
+};
+
+StringPatternGroup gFlockMacGroup{"macs", "Oink MAC Prefixes"};
+StringPatternGroup gFlockManufacturerGroup{"macs_mfr", "Contract Mfr MACs"};
+StringPatternGroup gSoundThinkingGroup{"macs_soundthinking", "SoundThinking MACs"};
+StringPatternGroup gDeviceNameGroup{"names", "BLE Device Names"};
+StringPatternGroup gRavenUuidGroup{"raven", "Raven UUIDs"};
+bool gBleManufacturerEnabled = true;
+std::vector<uint16_t> gBleManufacturerIds;
+
+String normalizeToken(const String& rawValue) {
+    String value = rawValue;
+    value.trim();
+    return value;
+}
+
+String normalizePrefix(const String& rawValue) {
+    String compact;
+    compact.reserve(rawValue.length());
+    for (size_t i = 0; i < rawValue.length(); ++i) {
+        char c = rawValue[i];
+        if (isxdigit(static_cast<unsigned char>(c))) {
+            compact += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        }
+    }
+    if (compact.length() < 6) {
+        return String();
+    }
+    compact = compact.substring(0, 6);
+    char formatted[9];
+    snprintf(formatted,
+             sizeof(formatted),
+             "%c%c:%c%c:%c%c",
+             compact[0],
+             compact[1],
+             compact[2],
+             compact[3],
+             compact[4],
+             compact[5]);
+    return String(formatted);
+}
+
+String normalizeUuid(const String& rawValue) {
+    String value = normalizeToken(rawValue);
+    value.toLowerCase();
+    return value;
+}
+
+bool parseManufacturerId(const String& rawValue, uint16_t& outValue) {
+    String value = normalizeToken(rawValue);
+    value.replace("0x", "");
+    value.replace("0X", "");
+    value.trim();
+    if (!value.length() || value.length() > 4) {
+        return false;
+    }
+
+    char* end = nullptr;
+    unsigned long parsed = strtoul(value.c_str(), &end, 16);
+    if (!end || *end != '\0' || parsed > 0xFFFFUL) {
+        return false;
+    }
+    outValue = static_cast<uint16_t>(parsed);
+    return true;
+}
+
+void loadDefaultStringGroup(StringPatternGroup& group, const char* const* defaults, size_t count, String (*normalize)(const String&)) {
+    group.enabled = true;
+    group.values.clear();
+    group.values.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        if (strncasecmp(value, patterns[i], 8) == 0) {
+        String normalized = normalize(defaults[i]);
+        if (normalized.length()) {
+            group.values.push_back(normalized);
+        }
+    }
+}
+
+void loadProfileDefaults() {
+    loadDefaultStringGroup(gFlockMacGroup, oink::config::kFlockMacPrefixes, oink::config::kFlockMacPrefixCount, normalizePrefix);
+    loadDefaultStringGroup(gFlockManufacturerGroup, oink::config::kFlockManufacturerPrefixes, oink::config::kFlockManufacturerPrefixCount, normalizePrefix);
+    loadDefaultStringGroup(gSoundThinkingGroup, oink::config::kSoundThinkingPrefixes, oink::config::kSoundThinkingPrefixCount, normalizePrefix);
+    loadDefaultStringGroup(gDeviceNameGroup, oink::config::kDeviceNamePatterns, oink::config::kDeviceNamePatternCount, normalizeToken);
+    loadDefaultStringGroup(gRavenUuidGroup, oink::config::kRavenServiceUuids, oink::config::kRavenServiceUuidCount, normalizeUuid);
+
+    gBleManufacturerEnabled = true;
+    gBleManufacturerIds.clear();
+    gBleManufacturerIds.reserve(oink::config::kBleManufacturerIdCount);
+    for (size_t i = 0; i < oink::config::kBleManufacturerIdCount; ++i) {
+        gBleManufacturerIds.push_back(oink::config::kBleManufacturerIds[i]);
+    }
+}
+
+bool checkPrefix(const char* value, const StringPatternGroup& group) {
+    if (!group.enabled || !value || !value[0]) {
+        return false;
+    }
+    for (const String& pattern : group.values) {
+        if (strncasecmp(value, pattern.c_str(), 8) == 0) {
             return true;
         }
     }
@@ -26,11 +138,11 @@ bool checkPrefix(const char* value, const char* const* patterns, size_t count) {
 }
 
 bool checkDeviceName(const char* name) {
-    if (!name || !name[0]) {
+    if (!gDeviceNameGroup.enabled || !name || !name[0]) {
         return false;
     }
-    for (size_t i = 0; i < oink::config::kDeviceNamePatternCount; ++i) {
-        if (strcasestr(name, oink::config::kDeviceNamePatterns[i])) {
+    for (const String& pattern : gDeviceNameGroup.values) {
+        if (strcasestr(name, pattern.c_str())) {
             return true;
         }
     }
@@ -38,8 +150,11 @@ bool checkDeviceName(const char* name) {
 }
 
 bool checkManufacturerId(uint16_t id) {
-    for (size_t i = 0; i < oink::config::kBleManufacturerIdCount; ++i) {
-        if (oink::config::kBleManufacturerIds[i] == id) {
+    if (!gBleManufacturerEnabled) {
+        return false;
+    }
+    for (uint16_t pattern : gBleManufacturerIds) {
+        if (pattern == id) {
             return true;
         }
     }
@@ -58,13 +173,193 @@ bool checkRavenUuid(NimBLEAdvertisedDevice* device) {
 
     for (int i = 0; i < count; ++i) {
         std::string uuid = device->getServiceUUID(i).toString();
-        for (size_t j = 0; j < oink::config::kRavenServiceUuidCount; ++j) {
-            if (strcasecmp(uuid.c_str(), oink::config::kRavenServiceUuids[j]) == 0) {
+        if (!gRavenUuidGroup.enabled) {
+            return false;
+        }
+        for (const String& pattern : gRavenUuidGroup.values) {
+            if (strcasecmp(uuid.c_str(), pattern.c_str()) == 0) {
                 return true;
             }
         }
     }
     return false;
+}
+
+void writeQuotedString(Print& out, const String& value) {
+    out.print('"');
+    for (size_t i = 0; i < value.length(); ++i) {
+        char c = value[i];
+        if (c == '"' || c == '\\') {
+            out.print('\\');
+        }
+        out.print(c);
+    }
+    out.print('"');
+}
+
+void writeStringArray(Print& out, const std::vector<String>& values) {
+    out.print('[');
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+            out.print(',');
+        }
+        writeQuotedString(out, values[i]);
+    }
+    out.print(']');
+}
+
+void writeManufacturerArray(Print& out) {
+    out.print('[');
+    for (size_t i = 0; i < gBleManufacturerIds.size(); ++i) {
+        if (i > 0) {
+            out.print(',');
+        }
+        char buffer[7];
+        snprintf(buffer, sizeof(buffer), "0x%04X", gBleManufacturerIds[i]);
+        writeQuotedString(out, String(buffer));
+    }
+    out.print(']');
+}
+
+bool readStringGroup(JsonObject root,
+                     const char* key,
+                     StringPatternGroup& group,
+                     String (*normalize)(const String&),
+                     size_t maxEntries,
+                     String& error) {
+    JsonObject obj = root[key];
+    if (!obj) {
+        error = String("Missing group: ") + key;
+        return false;
+    }
+    group.enabled = obj["enabled"] | true;
+    JsonArray values = obj["values"].as<JsonArray>();
+    if (values.isNull()) {
+        error = String("Missing values for group: ") + key;
+        return false;
+    }
+
+    std::vector<String> updated;
+    updated.reserve(maxEntries);
+    for (JsonVariant entry : values) {
+        if (updated.size() >= maxEntries) {
+            error = String("Too many entries in group: ") + key;
+            return false;
+        }
+        String normalized = normalize(entry.as<String>());
+        if (!normalized.length()) {
+            continue;
+        }
+        if (normalized.length() > kMaxStringLength) {
+            error = String("Entry too long in group: ") + key;
+            return false;
+        }
+        bool duplicate = false;
+        for (const String& existing : updated) {
+            if (existing.equalsIgnoreCase(normalized)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            updated.push_back(normalized);
+        }
+    }
+    group.values = updated;
+    return true;
+}
+
+bool readManufacturerGroup(JsonObject root, String& error) {
+    JsonObject obj = root["mfr"];
+    if (!obj) {
+        error = "Missing group: mfr";
+        return false;
+    }
+    gBleManufacturerEnabled = obj["enabled"] | true;
+    JsonArray values = obj["values"].as<JsonArray>();
+    if (values.isNull()) {
+        error = "Missing values for group: mfr";
+        return false;
+    }
+
+    std::vector<uint16_t> updated;
+    updated.reserve(kMaxManufacturerEntries);
+    for (JsonVariant entry : values) {
+        if (updated.size() >= kMaxManufacturerEntries) {
+            error = "Too many manufacturer IDs";
+            return false;
+        }
+        uint16_t parsed = 0;
+        if (!parseManufacturerId(entry.as<String>(), parsed)) {
+            error = String("Invalid manufacturer ID: ") + entry.as<String>();
+            return false;
+        }
+        bool duplicate = false;
+        for (uint16_t existing : updated) {
+            if (existing == parsed) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            updated.push_back(parsed);
+        }
+    }
+    gBleManufacturerIds = updated;
+    return true;
+}
+
+String profileJsonString() {
+    String json;
+    json.reserve(2048);
+    json += "{\"macs\":{\"enabled\":";
+    json += gFlockMacGroup.enabled ? "true" : "false";
+    json += ",\"values\":";
+    {
+        class StringPrint : public Print {
+        public:
+            explicit StringPrint(String& target) : target_(target) {}
+            size_t write(uint8_t c) override {
+                target_ += static_cast<char>(c);
+                return 1;
+            }
+        private:
+            String& target_;
+        } out(json);
+        writeStringArray(out, gFlockMacGroup.values);
+        json += "},\"macs_mfr\":{\"enabled\":";
+        json += gFlockManufacturerGroup.enabled ? "true" : "false";
+        json += ",\"values\":";
+        writeStringArray(out, gFlockManufacturerGroup.values);
+        json += "},\"macs_soundthinking\":{\"enabled\":";
+        json += gSoundThinkingGroup.enabled ? "true" : "false";
+        json += ",\"values\":";
+        writeStringArray(out, gSoundThinkingGroup.values);
+        json += "},\"names\":{\"enabled\":";
+        json += gDeviceNameGroup.enabled ? "true" : "false";
+        json += ",\"values\":";
+        writeStringArray(out, gDeviceNameGroup.values);
+        json += "},\"mfr\":{\"enabled\":";
+        json += gBleManufacturerEnabled ? "true" : "false";
+        json += ",\"values\":";
+        writeManufacturerArray(out);
+        json += "},\"raven\":{\"enabled\":";
+        json += gRavenUuidGroup.enabled ? "true" : "false";
+        json += ",\"values\":";
+        writeStringArray(out, gRavenUuidGroup.values);
+        json += "}}";
+    }
+    return json;
+}
+
+void saveProfileToPrefs() {
+    Preferences prefs;
+    if (!prefs.begin(kPrefsNamespace, false)) {
+        printf("[OINK-YOU] Detection profile save failed: prefs unavailable\n");
+        return;
+    }
+    prefs.putString(kPatternPrefsKey, profileJsonString());
+    prefs.end();
 }
 
 const char* estimateRavenFirmware(NimBLEAdvertisedDevice* device) {
@@ -231,13 +526,13 @@ class BleCallbacks : public NimBLEAdvertisedDeviceCallbacks {
         bool isRaven = false;
         const char* ravenFW = "";
 
-        if (checkPrefix(macPrefix, oink::config::kFlockMacPrefixes, oink::config::kFlockMacPrefixCount)) {
+        if (checkPrefix(macPrefix, gFlockMacGroup)) {
             detected = true;
             method = "mac_prefix";
-        } else if (checkPrefix(macPrefix, oink::config::kSoundThinkingPrefixes, oink::config::kSoundThinkingPrefixCount)) {
+        } else if (checkPrefix(macPrefix, gSoundThinkingGroup)) {
             detected = true;
             method = "mac_prefix_soundthinking";
-        } else if (checkPrefix(macPrefix, oink::config::kFlockManufacturerPrefixes, oink::config::kFlockManufacturerPrefixCount)) {
+        } else if (checkPrefix(macPrefix, gFlockManufacturerGroup)) {
             detected = true;
             method = "mac_prefix_mfr";
             highConfidence = false;
@@ -338,6 +633,69 @@ class BleCallbacks : public NimBLEAdvertisedDeviceCallbacks {
 } // namespace
 
 namespace oink::scan {
+
+void loadProfile() {
+    loadProfileDefaults();
+
+    Preferences prefs;
+    if (!prefs.begin(kPrefsNamespace, false)) {
+        printf("[OINK-YOU] Detection profile prefs unavailable; using defaults\n");
+        return;
+    }
+
+    String saved = prefs.getString(kPatternPrefsKey, "");
+    prefs.end();
+    if (saved.isEmpty()) {
+        return;
+    }
+
+    String error;
+    if (!updateProfileFromJson(saved, error)) {
+        printf("[OINK-YOU] Detection profile load failed: %s\n", error.c_str());
+        loadProfileDefaults();
+    } else {
+        printf("[OINK-YOU] Detection profile loaded from NVS\n");
+    }
+}
+
+void writeProfileJson(Print& out) {
+    out.print(profileJsonString());
+}
+
+bool updateProfileFromJson(const String& json, String& error) {
+    loadProfileDefaults();
+    if (json.isEmpty()) {
+        saveProfileToPrefs();
+        return true;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json);
+    if (err || !doc.is<JsonObject>()) {
+        error = err ? err.c_str() : "root not object";
+        loadProfileDefaults();
+        return false;
+    }
+
+    JsonObject root = doc.as<JsonObject>();
+    if (root["reset_defaults"] | false) {
+        saveProfileToPrefs();
+        return true;
+    }
+
+    if (!readStringGroup(root, "macs", gFlockMacGroup, normalizePrefix, kMaxStringEntries, error) ||
+        !readStringGroup(root, "macs_mfr", gFlockManufacturerGroup, normalizePrefix, kMaxStringEntries, error) ||
+        !readStringGroup(root, "macs_soundthinking", gSoundThinkingGroup, normalizePrefix, kMaxStringEntries, error) ||
+        !readStringGroup(root, "names", gDeviceNameGroup, normalizeToken, kMaxStringEntries, error) ||
+        !readManufacturerGroup(root, error) ||
+        !readStringGroup(root, "raven", gRavenUuidGroup, normalizeUuid, kMaxStringEntries, error)) {
+        loadProfileDefaults();
+        return false;
+    }
+
+    saveProfileToPrefs();
+    return true;
+}
 
 void setupBle() {
     NimBLEDevice::init("oinkyou");
@@ -483,36 +841,6 @@ void resetDetections() {
     gApp.triggered = false;
     gApp.deviceInRange = false;
     xSemaphoreGive(gApp.mutex);
-}
-
-const char* const* flockMacPrefixes(size_t& count) {
-    count = config::kFlockMacPrefixCount;
-    return config::kFlockMacPrefixes;
-}
-
-const char* const* flockManufacturerPrefixes(size_t& count) {
-    count = config::kFlockManufacturerPrefixCount;
-    return config::kFlockManufacturerPrefixes;
-}
-
-const char* const* soundThinkingPrefixes(size_t& count) {
-    count = config::kSoundThinkingPrefixCount;
-    return config::kSoundThinkingPrefixes;
-}
-
-const char* const* deviceNamePatterns(size_t& count) {
-    count = config::kDeviceNamePatternCount;
-    return config::kDeviceNamePatterns;
-}
-
-const uint16_t* bleManufacturerIds(size_t& count) {
-    count = config::kBleManufacturerIdCount;
-    return config::kBleManufacturerIds;
-}
-
-const char* const* ravenServiceUuids(size_t& count) {
-    count = config::kRavenServiceUuidCount;
-    return config::kRavenServiceUuids;
 }
 
 } // namespace oink::scan

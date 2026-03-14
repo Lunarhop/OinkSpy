@@ -77,6 +77,19 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 .guide .v{font-size:12px;line-height:1.35}
 .guide .sys{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:11px}
 .guide .sys span{background:rgba(251,113,133,.1);padding:4px 6px;border-radius:999px}
+.dbp{background:rgba(72,28,43,.42);border:1px solid rgba(251,113,133,.2);border-radius:8px;padding:10px;margin-bottom:10px}
+.dbp h3{font-size:14px;color:#fda4af;margin-bottom:4px}
+.dbp p{font-size:11px;color:#fbcfe8;line-height:1.4;margin-bottom:10px}
+.dbg{background:rgba(251,113,133,.08);border:1px solid rgba(251,113,133,.14);border-radius:8px;padding:8px;margin-bottom:8px}
+.dbgh{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.dbgh label{font-size:12px;color:#fff1f5;font-weight:bold}
+.dbgh input{accent-color:#fb7185}
+.dbh{font-size:10px;color:#fbcfe8;margin-bottom:6px;line-height:1.4}
+.dbta{width:100%;min-height:70px;background:rgba(31,15,21,.85);color:#fff1f5;border:1px solid rgba(251,113,133,.24);border-radius:6px;padding:8px;font-family:'Courier New',monospace;font-size:11px}
+.dbta:focus{outline:none;border-color:#fda4af}
+.dba{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.dba .btn{margin-bottom:0;flex:1;min-width:120px}
+.dbhx{font-size:10px;color:#f9a8d4;margin-top:4px}
 .launch{display:none;margin-top:10px;padding:10px;border:1px solid rgba(34,197,94,.28);border-radius:8px;background:rgba(20,83,45,.22)}
 .launch.v{display:block}
 .launch strong{display:block;font-size:12px;color:#dcfce7}
@@ -137,6 +150,7 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 </div>
 <script>
 let D=[],H=[],E=[];
+const PATTERN_GROUPS=[{key:'macs',label:'Oink MAC Prefixes',hint:'One MAC prefix per line, formatted like 58:8e:81.'},{key:'macs_mfr',label:'Contract Mfr MACs',hint:'Lower-confidence manufacturer MAC prefixes, one per line.'},{key:'macs_soundthinking',label:'SoundThinking MACs',hint:'Prefixes matched before manufacturer fallbacks.'},{key:'names',label:'BLE Device Names',hint:'Case-insensitive substrings, one pattern per line.'},{key:'mfr',label:'BLE Manufacturer IDs',hint:'Hex IDs like 0x09C8, one per line.'},{key:'raven',label:'Raven UUIDs',hint:'Full service UUIDs, one per line.'}];
 function setTxt(id,text,color){let el=document.getElementById(id);if(!el)return;el.textContent=text;if(color)el.style.color=color;}
 function tab(i,el){document.querySelectorAll('.tb button').forEach(b=>b.classList.remove('a'));document.querySelectorAll('.pn').forEach(p=>p.classList.remove('a'));el.classList.add('a');document.getElementById('p'+i).classList.add('a');if(i===1&&!window._hL)loadHistory();if(i===2&&!window._pL)loadPat();if(i===3)loadEvents();}
 function refresh(){fetch('/api/detections').then(r=>r.json()).then(d=>{D=d;render();stats();}).catch(()=>{document.getElementById('dL').innerHTML='<div class="empty">Live detections unavailable right now.<br>Stay connected to the OinkSpy AP and refresh in a moment.</div>';});}
@@ -150,7 +164,14 @@ function stats(){document.getElementById('sT').textContent=D.length;document.get
 function card(d){return '<div class="det"><div class="mac">'+d.mac+(d.name?'<span class="nm">'+d.name+'</span>':'')+'</div><div class="inf"><span>RSSI: '+d.rssi+'</span><span>'+d.method+'</span><span style="color:#fda4af;font-weight:bold">&times;'+d.count+'</span>'+(d.raven?'<span class="rv">RAVEN '+d.fw+'</span>':'')+(d.gps?'<span style="color:#22c55e">&#9673; '+d.gps.lat.toFixed(5)+','+d.gps.lon.toFixed(5)+'</span>':'<span style="color:#666">no gps</span>')+'</div></div>';}
 function eventCard(e){let title=e.record_type==='bookmark'?'BOOKMARK':'DETECTION';let label=e.label?'<div class="lb">'+e.label+'</div>':'';let gps=e.gps?'<span>GPS '+e.gps.lat.toFixed(5)+','+e.gps.lon.toFixed(5)+'</span>':'';let who=e.mac?'<span>'+e.mac+(e.name?' '+e.name:'')+'</span>':'';let sig=e.record_type==='detection'?'<span>RSSI '+e.rssi+'</span><span>'+e.method+'</span><span>&times;'+e.count+'</span>':'';let rv=e.is_raven?'<span>RAVEN '+e.raven_fw+'</span>':'';return '<div class="ev"><div class="hdx"><span class="tp">'+title+'</span><span>'+(e.iso8601||('ms '+e.millis))+'</span></div>'+label+'<div class="meta"><span>boot '+e.boot_count+'</span><span>'+e.time_source+'</span>'+who+sig+rv+gps+'</div></div>';}
 function loadHistory(){fetch('/api/history').then(r=>r.json()).then(d=>{H=d;let el=document.getElementById('hL');if(!H.length){el.innerHTML='<div class="empty">No prior session data</div>';return;} H.sort((a,b)=>b.last-a.last);el.innerHTML='<div style="font-size:11px;color:#f9a8d4;margin-bottom:8px">'+H.length+' detections from prior session</div>'+H.map(card).join('');window._hL=1;}).catch(()=>{document.getElementById('hL').innerHTML='<div class="empty">No prior session data</div>';});}
-function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{let h=''; h+='<div class="pg"><h3>Oink MAC Prefixes ('+p.macs.length+')</h3><div class="it">'+p.macs.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>Contract Mfr MACs ('+p.macs_mfr.length+')</h3><div class="it">'+p.macs_mfr.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>SoundThinking MACs ('+p.macs_soundthinking.length+')</h3><div class="it">'+p.macs_soundthinking.map(m=>'<span>'+m+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>BLE Device Names ('+p.names.length+')</h3><div class="it">'+p.names.map(n=>'<span>'+n+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>BLE Manufacturer IDs ('+p.mfr.length+')</h3><div class="it">'+p.mfr.map(m=>'<span>0x'+m.toString(16).toUpperCase().padStart(4,'0')+'</span>').join('')+'</div></div>'; h+='<div class="pg"><h3>Raven UUIDs ('+p.raven.length+')</h3><div class="it">'+p.raven.map(u=>'<span style="font-size:8px">'+u+'</span>').join('')+'</div></div>'; document.getElementById('pC').innerHTML=h;window._pL=1;}).catch(()=>{document.getElementById('pC').innerHTML='<div class="empty">Detection database unavailable</div>';});}
+function esc(v){return String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function patternAreaValue(values){return (values||[]).join('\n');}
+function renderPatternGroup(def,p){let group=p[def.key]||{enabled:true,values:[]};return '<div class="dbg"><div class="dbgh"><label>'+def.label+'</label><label><input type="checkbox" id="pat_'+def.key+'_enabled" '+(group.enabled?'checked':'')+'> enabled</label></div><div class="dbh">'+def.hint+'</div><textarea class="dbta" id="pat_'+def.key+'_values">'+esc(patternAreaValue(group.values))+'</textarea></div>';}
+function renderPatternEditor(p){let h='<div class="dbp"><h3>Detection Parameters</h3><p>Toggle each rule family on or off, then edit one value per line. Changes save to the device and take effect immediately.</p>';h+=PATTERN_GROUPS.map(def=>renderPatternGroup(def,p)).join('');h+='<div class="dba"><button class="btn" onclick="savePat(false)">SAVE PROFILE</button><button class="btn" onclick="loadPat()" style="background:#6366f1">RELOAD</button><button class="btn dng" onclick="savePat(true)">RESET DEFAULTS</button></div><div class="dbhx">MAC prefixes use the first 3 bytes only. BLE manufacturer IDs expect hex, and Raven UUIDs should stay full-length.</div></div>';document.getElementById('pC').innerHTML=h;}
+function patternLines(key){let raw=(document.getElementById('pat_'+key+'_values')||{}).value||'';return raw.split(/\r?\n|,/).map(v=>v.trim()).filter(Boolean);}
+function patternPayload(reset){if(reset){return {reset_defaults:true};} let payload={}; PATTERN_GROUPS.forEach(def=>{payload[def.key]={enabled:!!document.getElementById('pat_'+def.key+'_enabled').checked,values:patternLines(def.key)};}); return payload;}
+function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{renderPatternEditor(p);window._pL=1;}).catch(()=>{document.getElementById('pC').innerHTML='<div class="empty">Detection database unavailable</div>';});}
+function savePat(reset){fetch('/api/patterns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(patternPayload(reset))}).then(r=>r.json()).then(p=>{if(p.status&&p.status!=='success'){throw new Error(p.message||'save failed');} loadPat(); alert(reset?'Detection parameters reset to defaults.':'Detection parameters saved.');}).catch(err=>{alert('Detection parameter update failed: '+err.message);});}
 function loadEvents(){fetch('/api/events').then(r=>r.json()).then(d=>{E=d;let el=document.getElementById('eL');if(!E.length){el.innerHTML='<div class="empty">No recent events yet</div>';return;} el.innerHTML=E.map(eventCard).join('');}).catch(()=>{document.getElementById('eL').innerHTML='<div class="empty">Recent events unavailable</div>';});}
 function loadPortalMeta(){fetch('/api/time').then(r=>r.json()).then(t=>{setTxt('sysClock',t.synced?'Time: '+t.time_source+' '+t.iso8601:'Time: waiting for sync',t.synced?'#22c55e':'#facc15');}).catch(()=>{setTxt('sysClock','Time: unavailable','#ef4444');});fetch('/api/storage').then(r=>r.json()).then(s=>{let txt=s.sd_ready?'Storage: SD ready':'Storage: SD missing';if(s.log_events_dropped>0)txt+=' drops:'+s.log_events_dropped;setTxt('sysStore',txt,s.sd_ready&&s.sd_logging_enabled?'#22c55e':'#f59e0b');}).catch(()=>{setTxt('sysStore','Storage: unavailable','#ef4444');});fetch('/api/gnss').then(r=>r.json()).then(g=>{let txt=!g.enabled?'GNSS: off':g.has_fix?'GNSS: fix '+g.satellites+' sats':g.gps_seen?'GNSS: seen, no fix yet':'GNSS: waiting on D6/D7';setTxt('sysGnss',txt,g.has_fix?'#22c55e':g.gps_seen?'#facc15':'#f9a8d4');}).catch(()=>{setTxt('sysGnss','GNSS: unavailable','#ef4444');});}
 let _gW=null,_gOk=false,_gTried=false,_gPerm='unknown',_gPermStatus=null;
@@ -363,54 +384,35 @@ void setupServer() {
 
     gServer.on("/api/patterns", HTTP_GET, [](AsyncWebServerRequest* request) {
         AsyncResponseStream* resp = request->beginResponseStream("application/json");
-        size_t count = 0;
-        const char* const* strings = nullptr;
-        const uint16_t* ids = nullptr;
-
-        resp->print("{\"macs\":[");
-        strings = oink::scan::flockMacPrefixes(count);
-        for (size_t i = 0; i < count; ++i) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", strings[i]);
-        }
-
-        resp->print("],\"macs_mfr\":[");
-        strings = oink::scan::flockManufacturerPrefixes(count);
-        for (size_t i = 0; i < count; ++i) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", strings[i]);
-        }
-
-        resp->print("],\"macs_soundthinking\":[");
-        strings = oink::scan::soundThinkingPrefixes(count);
-        for (size_t i = 0; i < count; ++i) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", strings[i]);
-        }
-
-        resp->print("],\"names\":[");
-        strings = oink::scan::deviceNamePatterns(count);
-        for (size_t i = 0; i < count; ++i) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", strings[i]);
-        }
-
-        resp->print("],\"mfr\":[");
-        ids = oink::scan::bleManufacturerIds(count);
-        for (size_t i = 0; i < count; ++i) {
-            if (i > 0) resp->print(",");
-            resp->printf("%u", ids[i]);
-        }
-
-        resp->print("],\"raven\":[");
-        strings = oink::scan::ravenServiceUuids(count);
-        for (size_t i = 0; i < count; ++i) {
-            if (i > 0) resp->print(",");
-            resp->printf("\"%s\"", strings[i]);
-        }
-        resp->print("]}");
+        oink::scan::writeProfileJson(*resp);
         request->send(resp);
     });
+    gServer.on("/api/patterns", HTTP_POST, [](AsyncWebServerRequest* request) {}, nullptr,
+               [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+                   String* body = static_cast<String*>(request->_tempObject);
+                   if (index == 0 || !body) {
+                       body = new String();
+                       body->reserve(total);
+                       request->_tempObject = body;
+                   }
+                   for (size_t i = 0; i < len; ++i) {
+                       (*body) += static_cast<char>(data[i]);
+                   }
+                   if (index + len != total) {
+                       return;
+                   }
+
+                   String error;
+                   bool ok = oink::scan::updateProfileFromJson(*body, error);
+                   delete body;
+                   request->_tempObject = nullptr;
+                   if (!ok) {
+                       String payload = String("{\"status\":\"error\",\"message\":\"") + error + "\"}";
+                       request->send(400, "application/json", payload);
+                       return;
+                   }
+                   request->send(200, "application/json", "{\"status\":\"success\"}");
+               });
 
     gServer.on("/api/export/json", HTTP_GET, [](AsyncWebServerRequest* request) {
         AsyncResponseStream* resp = request->beginResponseStream("application/json");
@@ -630,6 +632,7 @@ void setup() {
     oink::board::initializePins();
     oink::log::beginStorage();
     oink::settings::load();
+    oink::scan::loadProfile();
     oink::timeutil::begin();
     oink::gnss::begin();
     oink::log::prepareSdLogs();

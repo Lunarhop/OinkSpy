@@ -3,6 +3,7 @@ import json
 import csv
 import glob
 import os
+import re
 from datetime import datetime
 import time
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -32,6 +33,7 @@ MAX_GPS_HISTORY = 100  # Keep last 100 GPS readings
 GPS_MATCH_THRESHOLD = 30  # Max seconds between detection and GPS reading
 serial_connection = None
 gps_enabled = False
+gps_source = None
 flock_device_connected = False
 flock_device_port = None
 flock_serial_connection = None
@@ -45,8 +47,52 @@ serial_queue = queue.Queue()
 next_detection_id = 1  # Unique ID counter
 settings = {'gps_port': '', 'flock_port': '', 'filter': 'all'}
 
-DEFAULT_SETTINGS = settings.copy()
+DEFAULT_DETECTION_PATTERNS = {
+    'macs': {'enabled': True, 'values': [
+        '58:8e:81', 'cc:cc:cc', 'ec:1b:bd', '90:35:ea', '04:0d:84',
+        'f0:82:c0', '1c:34:f1', '38:5b:44', '94:34:69', 'b4:e3:f9',
+        '70:c9:4e', '3c:91:80', 'd8:f3:bc', '80:30:49', '14:5a:fc',
+        '74:4c:a1', '08:3a:88', '9c:2f:9d', '94:08:53', 'e4:aa:ea',
+        'b4:1e:52'
+    ]},
+    'macs_mfr': {'enabled': True, 'values': ['f4:6a:dd', 'f8:a2:d6', 'e0:0a:f6', '00:f4:8d', 'd0:39:57', 'e8:d0:fc']},
+    'macs_soundthinking': {'enabled': True, 'values': ['d4:11:d6']},
+    'names': {'enabled': True, 'values': ['FS Ext Battery', 'Penguin', 'Flock', 'Pigvision']},
+    'mfr': {'enabled': True, 'values': ['0x09C8']},
+    'raven': {'enabled': True, 'values': [
+        '0000180a-0000-1000-8000-00805f9b34fb',
+        '00003100-0000-1000-8000-00805f9b34fb',
+        '00003200-0000-1000-8000-00805f9b34fb',
+        '00003300-0000-1000-8000-00805f9b34fb',
+        '00003400-0000-1000-8000-00805f9b34fb',
+        '00003500-0000-1000-8000-00805f9b34fb',
+        '00001809-0000-1000-8000-00805f9b34fb',
+        '00001819-0000-1000-8000-00805f9b34fb',
+    ]},
+}
+settings['detection_patterns'] = json.loads(json.dumps(DEFAULT_DETECTION_PATTERNS))
+
+DEFAULT_SETTINGS = json.loads(json.dumps(settings))
 ALLOWED_FILTERS = {'all', 'probe_request', 'beacon', 'mac_prefix', 'device_name'}
+FLOCK_GNSS_SOURCE_ID = 'oinkspy:gnss'
+FLOCK_GNSS_SOURCE_LABEL = 'OinkSpy Grove GNSS (D6/D7)'
+FLOCK_GNSS_PROBE_INTERVAL_SEC = 3.0
+last_flock_gnss_probe = 0.0
+
+GNSS_STATUS_RE = re.compile(
+    r'GNSS:\s+port=U(?P<uart>\d+)\s+rx=(?P<rx>\S+)\s+tx=(?P<tx>\S+)\s+baud=(?P<baud>\d+)'
+    r'\s+GPS:\s+(?P<seen>\w+)\s+Sats:\s+(?P<sats>[-\d]+)\s+Fix:\s+(?P<fix>\w+)',
+    re.IGNORECASE
+)
+GNSS_READY_RE = re.compile(
+    r'GNSS fixed UART ready:\s+U(?P<uart>\d+)\s+RX=(?P<rx>\S+)\s+TX=(?P<tx>\S+)\s+baud=(?P<baud>\d+)',
+    re.IGNORECASE
+)
+GNSS_SEEN_RE = re.compile(
+    r'GPS:\s+seen on\s+U(?P<uart>\d+)\s+RX=(?P<rx>\S+)\s+TX=(?P<tx>\S+)\s+@\s+(?P<baud>\d+)',
+    re.IGNORECASE
+)
+GNSS_SATS_RE = re.compile(r'Sats:\s+(?P<sats>\d+)', re.IGNORECASE)
 
 SERIAL_PORT_GLOBS = (
     '/dev/ttyUSB*',
@@ -66,6 +112,24 @@ SETTINGS_FILE = DATA_DIR / 'settings.json'
 
 # Ensure data directory exists
 DATA_DIR.mkdir(exist_ok=True)
+
+
+def make_default_flock_gnss_status():
+    return {
+        'enabled': False,
+        'gps_seen': False,
+        'has_fix': False,
+        'satellites': 0,
+        'uart': None,
+        'rx_pin': 'D6',
+        'tx_pin': 'D7',
+        'baud': 9600,
+        'last_update': None,
+        'last_fix': None,
+    }
+
+
+flock_gnss_status = make_default_flock_gnss_status()
 
 # Persistent storage functions
 def load_cumulative_detections():
@@ -99,6 +163,7 @@ def load_settings():
             with open(SETTINGS_FILE, 'r') as f:
                 settings.update(json.load(f))
             settings['filter'] = normalize_filter(settings.get('filter'))
+            settings['detection_patterns'] = normalize_detection_patterns(settings.get('detection_patterns'))
             print(f"Loaded settings: {settings}")
     except Exception as e:
         print(f"Error loading settings: {e}")
@@ -136,22 +201,157 @@ def normalize_filter(value):
         return value
     return DEFAULT_SETTINGS['filter']
 
+def normalize_prefix(value):
+    compact = ''.join(ch.lower() for ch in str(value).strip() if ch.isalnum())
+    if len(compact) < 6:
+        return None
+    compact = compact[:6]
+    return f'{compact[0:2]}:{compact[2:4]}:{compact[4:6]}'
+
+def normalize_hex_id(value):
+    text = str(value).strip().lower().replace('0x', '')
+    if not text or len(text) > 4:
+        return None
+    try:
+        parsed = int(text, 16)
+    except ValueError:
+        return None
+    if parsed < 0 or parsed > 0xFFFF:
+        return None
+    return f'0x{parsed:04X}'
+
+def normalize_text_token(value):
+    text = str(value).strip()
+    return text or None
+
+def normalize_uuid(value):
+    text = str(value).strip().lower()
+    return text or None
+
+def default_detection_patterns():
+    return json.loads(json.dumps(DEFAULT_DETECTION_PATTERNS))
+
+def normalize_detection_patterns(payload):
+    defaults = default_detection_patterns()
+    if not isinstance(payload, dict):
+        return defaults
+
+    normalizers = {
+        'macs': normalize_prefix,
+        'macs_mfr': normalize_prefix,
+        'macs_soundthinking': normalize_prefix,
+        'names': normalize_text_token,
+        'mfr': normalize_hex_id,
+        'raven': normalize_uuid,
+    }
+
+    normalized = {}
+    for key, default_group in defaults.items():
+        source_group = payload.get(key, {})
+        values = []
+        seen = set()
+        if isinstance(source_group, dict):
+            source_values = source_group.get('values', [])
+            enabled = bool(source_group.get('enabled', default_group['enabled']))
+        else:
+            source_values = default_group['values']
+            enabled = default_group['enabled']
+
+        if isinstance(source_values, list):
+            for raw in source_values:
+                cleaned = normalizers[key](raw)
+                if cleaned and cleaned.lower() not in seen:
+                    values.append(cleaned)
+                    seen.add(cleaned.lower())
+
+        normalized[key] = {
+            'enabled': enabled,
+            'values': values,
+        }
+
+    return normalized
+
+def reset_flock_gnss_status():
+    global flock_gnss_status
+    flock_gnss_status = make_default_flock_gnss_status()
+
+def update_flock_gnss_status(**updates):
+    global flock_gnss_status
+    flock_gnss_status.update(updates)
+    flock_gnss_status['last_update'] = datetime.now().isoformat()
+
+def request_flock_gnss_status(force=False):
+    global last_flock_gnss_probe
+
+    if not flock_device_connected or not flock_serial_connection or not flock_serial_connection.is_open:
+        return False
+
+    now = time.time()
+    if not force and (now - last_flock_gnss_probe) < FLOCK_GNSS_PROBE_INTERVAL_SEC:
+        return False
+
+    try:
+        flock_serial_connection.write(b'gnss status\n')
+        flock_serial_connection.flush()
+        last_flock_gnss_probe = now
+        return True
+    except Exception as e:
+        print(f"Failed to request GNSS status from OinkSpy: {e}")
+        return False
+
+def build_embedded_gnss_port():
+    description = FLOCK_GNSS_SOURCE_LABEL
+    if flock_gnss_status.get('has_fix'):
+        description += f" - fix ({flock_gnss_status.get('satellites', 0)} sats)"
+    elif flock_gnss_status.get('gps_seen'):
+        description += ' - seen, no fix yet'
+    elif flock_gnss_status.get('enabled'):
+        description += ' - waiting for receiver/fix'
+    else:
+        description += ' - probe pending'
+
+    return {
+        'device': FLOCK_GNSS_SOURCE_ID,
+        'description': description,
+        'manufacturer': 'OinkSpy',
+        'product': 'Embedded Grove GNSS',
+        'vid': None,
+        'pid': None,
+        'kind': 'embedded_gnss',
+    }
+
+def discover_gps_sources():
+    sources = discover_serial_ports()
+    if flock_device_connected:
+        request_flock_gnss_status(force=False)
+        sources.insert(0, build_embedded_gnss_port())
+    return sources
+
+def gps_connection_label():
+    if gps_source == FLOCK_GNSS_SOURCE_ID:
+        return FLOCK_GNSS_SOURCE_LABEL
+    if serial_connection:
+        return serial_connection.port
+    return None
+
 def build_status_payload():
-    available_ports = discover_serial_ports()
+    available_ports = discover_gps_sources()
     return {
         'gps_connected': gps_enabled,
-        'gps_port': serial_connection.port if serial_connection else None,
+        'gps_port': gps_connection_label(),
+        'gps_source': gps_source,
         'gps_ports_available': len(available_ports),
         'flock_connected': flock_device_connected,
         'flock_port': flock_device_port,
-        'flock_ports_available': len(available_ports),
+        'flock_ports_available': len(discover_serial_ports()),
+        'oinkspy_gnss_status': flock_gnss_status,
         'session_detection_count': len(detections),
         'cumulative_detection_count': len(cumulative_detections),
         'selected_filter': normalize_filter(settings.get('filter')),
         'recommended_action': (
             'Connect the OinkSpy sniffer to start streaming detections.'
             if not flock_device_connected
-            else 'Connect GPS for location tagging.'
+            else 'Choose GPS or use the OinkSpy Grove GNSS source for location tagging.'
             if not gps_enabled
             else 'Monitoring live detections.'
         ),
@@ -333,9 +533,94 @@ def safe_socket_emit(event, data, room=None):
     except Exception as e:
         print(f"Socket emit error for {event}: {e}")
 
+def build_embedded_gps_fix(gps_payload):
+    if not isinstance(gps_payload, dict):
+        return None
+
+    lat = gps_payload.get('lat')
+    lon = gps_payload.get('lon')
+    if lat is None or lon is None:
+        return None
+
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except (TypeError, ValueError):
+        return None
+
+    fix = {
+        'latitude': lat,
+        'longitude': lon,
+        'fix_quality': 1,
+        'match_quality': 'oinkspy_gnss',
+        'time_diff': 0,
+        'source': FLOCK_GNSS_SOURCE_ID,
+    }
+    if gps_payload.get('acc') is not None:
+        fix['accuracy'] = gps_payload.get('acc')
+    if gps_payload.get('timestamp') is not None:
+        fix['timestamp'] = gps_payload.get('timestamp')
+    if gps_payload.get('satellites') is not None:
+        fix['satellites'] = gps_payload.get('satellites')
+    return fix
+
+def handle_flock_gnss_line(line):
+    status_match = GNSS_STATUS_RE.search(line)
+    if status_match:
+        satellites = status_match.group('sats')
+        update_flock_gnss_status(
+            enabled=True,
+            gps_seen=status_match.group('seen').lower() == 'seen',
+            has_fix=status_match.group('fix').lower() == 'yes',
+            satellites=int(satellites) if satellites.isdigit() else 0,
+            uart=int(status_match.group('uart')),
+            rx_pin=status_match.group('rx'),
+            tx_pin=status_match.group('tx'),
+            baud=int(status_match.group('baud')),
+        )
+        safe_socket_emit('oinkspy_gnss_status', flock_gnss_status)
+        return True
+
+    ready_match = GNSS_READY_RE.search(line)
+    if ready_match:
+        update_flock_gnss_status(
+            enabled=True,
+            uart=int(ready_match.group('uart')),
+            rx_pin=ready_match.group('rx'),
+            tx_pin=ready_match.group('tx'),
+            baud=int(ready_match.group('baud')),
+        )
+        safe_socket_emit('oinkspy_gnss_status', flock_gnss_status)
+        return True
+
+    seen_match = GNSS_SEEN_RE.search(line)
+    if seen_match:
+        update_flock_gnss_status(
+            enabled=True,
+            gps_seen=True,
+            uart=int(seen_match.group('uart')),
+            rx_pin=seen_match.group('rx'),
+            tx_pin=seen_match.group('tx'),
+            baud=int(seen_match.group('baud')),
+        )
+        safe_socket_emit('oinkspy_gnss_status', flock_gnss_status)
+        return True
+
+    sats_match = GNSS_SATS_RE.search(line)
+    if sats_match:
+        update_flock_gnss_status(
+            enabled=True,
+            gps_seen=True,
+            satellites=int(sats_match.group('sats')),
+        )
+        safe_socket_emit('oinkspy_gnss_status', flock_gnss_status)
+        return True
+
+    return False
+
 def gps_reader():
     """Background thread for reading GPS data"""
-    global gps_data, serial_connection, gps_enabled
+    global gps_data, serial_connection, gps_enabled, gps_source
     
     while gps_enabled:
         if serial_connection and serial_connection.is_open:
@@ -369,13 +654,14 @@ def gps_reader():
                 print(f"GPS read error: {e}")
                 with connection_lock:
                     gps_enabled = False
+                    gps_source = None
                 safe_socket_emit('gps_disconnected', {})
                 break
         time.sleep(0.1)
 
 def flock_reader():
     """Background thread for reading Flock device data"""
-    global flock_serial_connection, flock_device_connected, serial_data_buffer
+    global flock_serial_connection, flock_device_connected, gps_enabled, gps_source, serial_data_buffer, gps_data
     
     with app.app_context():
         while flock_device_connected:
@@ -393,20 +679,35 @@ def flock_reader():
                             # Forward to all serial terminal clients
                             safe_socket_emit('serial_data', line, room='serial_terminal')
                             print(f"Serial data sent to terminal: {line}")
+                            handle_flock_gnss_line(line)
                             
                             # Try to parse as detection data
                             try:
                                 data = json.loads(line)
                                 if 'detection_method' in data:
-                                    # Map ESP32 GPS from phone to Flask GPS format
+                                    # Map ESP32 GPS formats to the Flask dashboard schema.
                                     esp_gps = data.get('gps')
-                                    if esp_gps:
+                                    embedded_fix = build_embedded_gps_fix(esp_gps)
+                                    if embedded_fix:
+                                        data['gps'] = embedded_fix
+                                        gps_data = embedded_fix
+                                        update_flock_gnss_status(
+                                            enabled=True,
+                                            gps_seen=True,
+                                            has_fix=True,
+                                            satellites=embedded_fix.get('satellites', flock_gnss_status.get('satellites', 0)),
+                                            last_fix=embedded_fix,
+                                        )
+                                        if gps_enabled and gps_source == FLOCK_GNSS_SOURCE_ID:
+                                            safe_socket_emit('gps_update', embedded_fix)
+                                    elif esp_gps:
                                         data['gps'] = {
                                             'latitude': esp_gps.get('latitude'),
                                             'longitude': esp_gps.get('longitude'),
                                             'fix_quality': 1,
                                             'match_quality': 'esp32_phone_gps',
                                             'time_diff': 0,
+                                            'source': 'esp32_phone_gps',
                                         }
                                         if esp_gps.get('accuracy') is not None:
                                             data['gps']['accuracy'] = esp_gps['accuracy']
@@ -420,9 +721,16 @@ def flock_reader():
                                 
                 except Exception as e:
                     print(f"Flock device read error: {e}")
+                    gps_was_embedded = gps_source == FLOCK_GNSS_SOURCE_ID
                     with connection_lock:
                         flock_device_connected = False
+                        if gps_was_embedded:
+                            gps_enabled = False
+                            gps_source = None
+                    reset_flock_gnss_status()
                     safe_socket_emit('flock_disconnected', {})
+                    if gps_was_embedded:
+                        safe_socket_emit('gps_disconnected', {})
                     # Trigger reconnection immediately
                     attempt_reconnect_flock()
                     break
@@ -626,16 +934,17 @@ def add_detection_from_serial(data):
 
 def connection_monitor():
     """Background thread for monitoring device connections"""
-    global gps_enabled, flock_device_connected, serial_connection, reconnect_attempts
+    global gps_enabled, gps_source, flock_device_connected, serial_connection, reconnect_attempts
     
     with app.app_context():
         while True:
             # Check GPS connection
-            if gps_enabled:
+            if gps_enabled and gps_source == 'serial':
                 try:
                     if not serial_connection or not serial_connection.is_open:
                         with connection_lock:
                             gps_enabled = False
+                            gps_source = None
                         safe_socket_emit('gps_disconnected', {})
                         print("GPS connection lost")
                         # Start reconnection attempts
@@ -647,12 +956,20 @@ def connection_monitor():
                     print(f"GPS connection test failed: {e}")
                     with connection_lock:
                         gps_enabled = False
+                        gps_source = None
                     safe_socket_emit('gps_disconnected', {})
                     attempt_reconnect_gps()
+
+            if gps_enabled and gps_source == FLOCK_GNSS_SOURCE_ID and not flock_device_connected:
+                with connection_lock:
+                    gps_enabled = False
+                    gps_source = None
+                safe_socket_emit('gps_disconnected', {})
             
             # Check Flock You device connection
             if flock_device_connected:
                 try:
+                    request_flock_gnss_status(force=False)
                     # Test if the connection is still valid
                     if not flock_serial_connection or not flock_serial_connection.is_open:
                         with connection_lock:
@@ -728,13 +1045,13 @@ def attempt_reconnect_flock():
 
 def attempt_reconnect_gps():
     """Attempt to reconnect to GPS device"""
-    global gps_enabled, reconnect_attempts
+    global gps_enabled, gps_source, reconnect_attempts
     
     def reconnect_thread():
         global gps_enabled, reconnect_attempts
 
         with app.app_context():
-            while not gps_enabled and reconnect_attempts['gps'] < max_reconnect_attempts:
+            while not gps_enabled and gps_source != FLOCK_GNSS_SOURCE_ID and reconnect_attempts['gps'] < max_reconnect_attempts:
                 try:
                     print(f"Attempting to reconnect to GPS device (attempt {reconnect_attempts['gps'] + 1}/{max_reconnect_attempts})")
                     
@@ -745,6 +1062,7 @@ def attempt_reconnect_gps():
                     # If successful, update status
                     with connection_lock:
                         gps_enabled = True
+                        gps_source = 'serial'
                     reconnect_attempts['gps'] = 0
                     print(f"Successfully reconnected to GPS device on {serial_connection.port}")
                     safe_socket_emit('gps_reconnected', {'port': serial_connection.port})
@@ -872,7 +1190,7 @@ def add_detection():
 @app.route('/api/gps/connect', methods=['POST'])
 def connect_gps():
     """Connect to GPS dongle"""
-    global serial_connection, gps_enabled
+    global serial_connection, gps_enabled, gps_source
 
     data, error_response = request_json_object()
     if error_response:
@@ -884,6 +1202,28 @@ def connect_gps():
             'GPS port is required.',
             hint='Choose a port from the dropdown or set OINKSPY_SERIAL_PORTS when auto-discovery misses your device.'
         )
+
+    if port == FLOCK_GNSS_SOURCE_ID:
+        if not flock_device_connected:
+            return json_error(
+                'The OinkSpy sniffer must be connected before using Grove GNSS.',
+                hint='Connect the sniffer first so the companion can query GNSS status over the same serial link.'
+            )
+
+        if serial_connection:
+            try:
+                serial_connection.close()
+            except Exception:
+                pass
+            serial_connection = None
+
+        request_flock_gnss_status(force=True)
+        with connection_lock:
+            gps_enabled = True
+            gps_source = FLOCK_GNSS_SOURCE_ID
+        if flock_gnss_status.get('last_fix'):
+            safe_socket_emit('gps_update', flock_gnss_status['last_fix'])
+        return jsonify({'status': 'success', 'message': f'Using {FLOCK_GNSS_SOURCE_LABEL}'})
     
     try:
         if serial_connection:
@@ -892,6 +1232,7 @@ def connect_gps():
         serial_connection = serial.Serial(port, GPS_BAUDRATE, timeout=GPS_TIMEOUT)
         with connection_lock:
             gps_enabled = True
+            gps_source = 'serial'
         
         # Start GPS reading thread
         gps_thread = threading.Thread(target=gps_reader, daemon=True)
@@ -907,10 +1248,11 @@ def connect_gps():
 @app.route('/api/gps/disconnect', methods=['POST'])
 def disconnect_gps():
     """Disconnect GPS dongle"""
-    global serial_connection, gps_enabled
+    global serial_connection, gps_enabled, gps_source
     
     with connection_lock:
         gps_enabled = False
+        gps_source = None
     if serial_connection:
         serial_connection.close()
         serial_connection = None
@@ -939,10 +1281,12 @@ def connect_flock():
         with connection_lock:
             flock_device_connected = True
         flock_device_port = port
+        reset_flock_gnss_status()
         
         # Start reading thread
         flock_thread = threading.Thread(target=flock_reader, daemon=True)
         flock_thread.start()
+        request_flock_gnss_status(force=True)
         
         return jsonify({'status': 'success', 'message': f'Connected to Flock You device on {port}'})
     except Exception as e:
@@ -954,7 +1298,7 @@ def connect_flock():
 @app.route('/api/flock/disconnect', methods=['POST'])
 def disconnect_flock():
     """Disconnect Flock You device"""
-    global flock_device_connected, flock_device_port, flock_serial_connection
+    global flock_device_connected, flock_device_port, flock_serial_connection, gps_enabled, gps_source
     
     with connection_lock:
         flock_device_connected = False
@@ -963,6 +1307,12 @@ def disconnect_flock():
     if flock_serial_connection and flock_serial_connection.is_open:
         flock_serial_connection.close()
         flock_serial_connection = None
+
+    reset_flock_gnss_status()
+    if gps_source == FLOCK_GNSS_SOURCE_ID:
+        with connection_lock:
+            gps_enabled = False
+            gps_source = None
     
     return jsonify({'status': 'success', 'message': 'Flock You device disconnected'})
 
@@ -973,8 +1323,8 @@ def get_status():
 
 @app.route('/api/gps/ports', methods=['GET'])
 def get_gps_ports():
-    """Get available serial ports for GPS"""
-    return jsonify(discover_serial_ports())
+    """Get available GPS sources for the companion dashboard."""
+    return jsonify(discover_gps_sources())
 
 @app.route('/api/flock/ports', methods=['GET'])
 def get_flock_ports():
@@ -1441,6 +1791,7 @@ def get_settings():
     """Get current settings"""
     normalized = dict(settings)
     normalized['filter'] = normalize_filter(normalized.get('filter'))
+    normalized['detection_patterns'] = normalize_detection_patterns(normalized.get('detection_patterns'))
     return jsonify(normalized)
 
 @app.route('/api/settings', methods=['POST'])
@@ -1454,9 +1805,32 @@ def update_settings():
     updated_settings = dict(settings)
     updated_settings.update(data)
     updated_settings['filter'] = normalize_filter(updated_settings.get('filter'))
+    updated_settings['detection_patterns'] = normalize_detection_patterns(updated_settings.get('detection_patterns'))
     settings = updated_settings
     save_settings()
     return jsonify({'status': 'success', 'settings': settings})
+
+@app.route('/api/patterns', methods=['GET'])
+def get_detection_patterns():
+    """Return editable detection pattern groups for the dashboard DB panel."""
+    return jsonify(normalize_detection_patterns(settings.get('detection_patterns')))
+
+@app.route('/api/patterns', methods=['POST'])
+def update_detection_patterns():
+    """Update persisted detection pattern groups."""
+    global settings
+
+    data, error_response = request_json_object()
+    if error_response:
+        return error_response
+
+    if data.get('reset_defaults'):
+        settings['detection_patterns'] = default_detection_patterns()
+    else:
+        settings['detection_patterns'] = normalize_detection_patterns(data)
+
+    save_settings()
+    return jsonify({'status': 'success', 'patterns': settings['detection_patterns']})
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():

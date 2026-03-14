@@ -663,6 +663,105 @@
             padding: 1rem;
         }
 
+        .pattern-editor-card {
+            background: var(--panel-deep);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .pattern-editor-card h3 {
+            color: var(--accent-3);
+            font-size: 1rem;
+            margin: 0 0 0.35rem 0;
+        }
+
+        .pattern-editor-copy {
+            color: var(--muted);
+            font-size: 0.8rem;
+            line-height: 1.4;
+            margin-bottom: 1rem;
+        }
+
+        .pattern-editor-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-top: 1rem;
+        }
+
+        .pattern-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 0.75rem;
+        }
+
+        .pattern-group {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 0.75rem;
+        }
+
+        .pattern-group-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.4rem;
+        }
+
+        .pattern-group-title {
+            color: var(--accent-3);
+            font-size: 0.85rem;
+            font-weight: 700;
+        }
+
+        .pattern-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            color: var(--text);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .pattern-group-hint {
+            color: #9ca3af;
+            font-size: 0.72rem;
+            line-height: 1.35;
+            margin-bottom: 0.45rem;
+        }
+
+        .pattern-textarea {
+            width: 100%;
+            min-height: 108px;
+            resize: vertical;
+            background: rgba(5, 18, 14, 0.55);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            color: var(--text);
+            padding: 0.6rem;
+            font-size: 0.8rem;
+            line-height: 1.4;
+            font-family: "Courier New", monospace;
+        }
+
+        .pattern-textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.24);
+        }
+
+        .pattern-help {
+            color: #9ca3af;
+            font-size: 0.72rem;
+            line-height: 1.35;
+            margin-top: 0.65rem;
+        }
+
         .search-input-group {
             display: flex;
             gap: 0.5rem;
@@ -1603,7 +1702,7 @@
                         <label>GPS:</label>
                         <div class="port-controls">
                             <select id="gpsPortSelect">
-                                <option value="">Select Port</option>
+                                <option value="">Select GPS Source</option>
                             </select>
                             <button id="refreshGpsPortsBtn" class="refresh-btn" title="Refresh ports" onclick="loadGpsPorts()">↻</button>
                         </div>
@@ -1743,15 +1842,22 @@
 
         <div class="oui-search-container" id="ouiSearchContainer" style="display: none;">
             <div class="oui-search-header">
-                <h2>OUI Database Search</h2>
+                <h2>Detection DB</h2>
                 <div class="oui-search-controls">
-                    <span class="oui-status">Search IEEE OUI Database</span>
+                    <span class="oui-status">Detection rules + IEEE OUI lookup</span>
                     <button class="view-all-btn" onclick="viewAllOui()">View All</button>
                     <button class="refresh-db-btn" onclick="refreshOuiDatabase()">Refresh DB</button>
                     <button class="clear-oui-btn" onclick="clearOuiResults()">Clear Results</button>
                 </div>
             </div>
             <div class="oui-search-content">
+                <div class="pattern-editor-card">
+                    <h3>Detection Parameters</h3>
+                    <p class="pattern-editor-copy">Toggle rule families on or off and edit one value per line. The companion app saves its own profile locally so you can tune review and import workflows without touching the device defaults.</p>
+                    <div id="patternEditorContent">
+                        <div class="search-placeholder">Loading detection parameters...</div>
+                    </div>
+                </div>
                 <div class="search-input-group">
                     <input type="text" id="ouiSearchInput" class="oui-search-input" placeholder="Enter MAC address (e.g., 00:11:22) or manufacturer name..." onkeypress="handleOuiSearch(event)">
                     <button class="search-btn" onclick="searchOui()">Search</button>
@@ -1837,6 +1943,14 @@
         let n3rdsecTapCount = 0;
         let n3rdsecTapTimer = null;
         let noticeTimer = null;
+        const DETECTION_PATTERN_GROUPS = [
+            { key: 'macs', label: 'Oink MAC Prefixes', hint: 'One MAC prefix per line, like 58:8e:81.' },
+            { key: 'macs_mfr', label: 'Contract Mfr MACs', hint: 'Manufacturer prefixes used as lower-confidence matches.' },
+            { key: 'macs_soundthinking', label: 'SoundThinking MACs', hint: 'Prefixes matched before the manufacturer fallback list.' },
+            { key: 'names', label: 'BLE Device Names', hint: 'Case-insensitive substrings, one per line.' },
+            { key: 'mfr', label: 'BLE Manufacturer IDs', hint: 'Hex values like 0x09C8, one per line.' },
+            { key: 'raven', label: 'Raven UUIDs', hint: 'Full BLE service UUIDs, one per line.' },
+        ];
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
@@ -1844,6 +1958,7 @@
             loadCumulativeDetections();
             loadFlockPorts();
             loadGpsPorts();
+            loadDetectionPatterns();
             setupEventListeners();
             loadStatus();
             loadSettings();
@@ -2073,6 +2188,113 @@
             });
         }
 
+        function escapeHtml(value) {
+            return String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        function patternText(values) {
+            return (values || []).join('\n');
+        }
+
+        function renderDetectionPatterns(patterns) {
+            const container = document.getElementById('patternEditorContent');
+            if (!container) return;
+
+            const groupsHtml = DETECTION_PATTERN_GROUPS.map(group => {
+                const config = patterns[group.key] || { enabled: true, values: [] };
+                return `
+                    <div class="pattern-group">
+                        <div class="pattern-group-header">
+                            <div class="pattern-group-title">${group.label}</div>
+                            <label class="pattern-toggle">
+                                <input type="checkbox" id="pattern-${group.key}-enabled" ${config.enabled ? 'checked' : ''}>
+                                <span>Enabled</span>
+                            </label>
+                        </div>
+                        <div class="pattern-group-hint">${group.hint}</div>
+                        <textarea class="pattern-textarea" id="pattern-${group.key}-values">${escapeHtml(patternText(config.values))}</textarea>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = `
+                <div class="pattern-grid">${groupsHtml}</div>
+                <div class="pattern-editor-actions">
+                    <button class="search-btn" onclick="saveDetectionPatterns(false)">Save Rules</button>
+                    <button class="view-all-btn" onclick="loadDetectionPatterns()">Reload</button>
+                    <button class="clear-oui-btn" onclick="saveDetectionPatterns(true)">Reset Defaults</button>
+                </div>
+                <div class="pattern-help">These rules are saved in the companion app settings file. They are separate from the device profile unless you manually mirror them there too.</div>
+            `;
+        }
+
+        function detectionPatternValues(key) {
+            const field = document.getElementById(`pattern-${key}-values`);
+            if (!field) return [];
+
+            return field.value
+                .split(/\r?\n|,/)
+                .map(value => value.trim())
+                .filter(Boolean);
+        }
+
+        function collectDetectionPatterns() {
+            const payload = {};
+            DETECTION_PATTERN_GROUPS.forEach(group => {
+                payload[group.key] = {
+                    enabled: Boolean(document.getElementById(`pattern-${group.key}-enabled`)?.checked),
+                    values: detectionPatternValues(group.key),
+                };
+            });
+            return payload;
+        }
+
+        function loadDetectionPatterns() {
+            fetch('/api/patterns')
+                .then(response => response.json())
+                .then(patterns => {
+                    renderDetectionPatterns(patterns);
+                })
+                .catch(error => {
+                    console.error('Error loading detection patterns:', error);
+                    const container = document.getElementById('patternEditorContent');
+                    if (container) {
+                        container.innerHTML = '<div class="search-placeholder">Detection parameters unavailable right now.</div>';
+                    }
+                });
+        }
+
+        function saveDetectionPatterns(resetDefaults) {
+            const payload = resetDefaults ? { reset_defaults: true } : collectDetectionPatterns();
+
+            fetch('/api/patterns', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status !== 'success') {
+                    throw new Error(data.message || 'Save failed');
+                }
+                loadDetectionPatterns();
+                showAppNotice(
+                    resetDefaults ? 'Detection parameters reset to defaults.' : 'Detection parameters saved.',
+                    'success'
+                );
+            })
+            .catch(error => {
+                console.error('Error saving detection patterns:', error);
+                showAppNotice(`Detection parameter update failed: ${error.message}`, 'error', true);
+            });
+        }
+
         function loadGpsPorts() {
             const select = document.getElementById('gpsPortSelect');
             const refreshBtn = document.getElementById('refreshGpsPortsBtn');
@@ -2092,11 +2314,13 @@
                 .then(ports => {
                     console.log('GPS ports loaded:', ports.length);
                     
-                    select.innerHTML = '<option value="">Select GPS Port</option>';
+                    select.innerHTML = '<option value="">Select GPS Source</option>';
                     ports.forEach(port => {
                         const option = document.createElement('option');
                         option.value = port.device;
-                        option.textContent = `${port.device} - ${port.description}`;
+                        option.textContent = port.kind === 'embedded_gnss'
+                            ? port.description
+                            : `${port.device} - ${port.description}`;
                         select.appendChild(option);
                     });
                     
@@ -2228,7 +2452,7 @@
         function connectGps() {
             const port = document.getElementById('gpsPortSelect').value;
             if (!port) {
-                showAppNotice('Select a GPS serial port before connecting.', 'warning');
+                showAppNotice('Select a GPS source before connecting.', 'warning');
                 return;
             }
 
@@ -2249,7 +2473,11 @@
                     updateGpsStatus(true);
                     document.getElementById('connectGpsBtn').style.display = 'none';
                     document.getElementById('disconnectGpsBtn').style.display = 'inline-block';
-                    showAppNotice(`GPS connected on ${port}. New detections can now be location tagged.`, 'success');
+                    if (port === 'oinkspy:gnss') {
+                        showAppNotice('Using the OinkSpy Grove GNSS on D6/D7 for location tagging.', 'success');
+                    } else {
+                        showAppNotice(`GPS connected on ${port}. New detections can now be location tagged.`, 'success');
+                    }
                     loadStatus();
                 } else {
                     showAppNotice(data.hint ? `${data.message} ${data.hint}` : `GPS connection failed: ${data.message}`, 'error', true);
@@ -2664,6 +2892,12 @@
 
         socket.on('gps_update', function(gpsData) {
             console.log('GPS Update:', gpsData);
+        });
+
+        socket.on('oinkspy_gnss_status', function(status) {
+            console.log('OinkSpy GNSS status:', status);
+            loadGpsPorts();
+            loadStatus();
         });
 
         socket.on('gps_disconnected', function() {

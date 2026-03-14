@@ -108,3 +108,34 @@ def test_update_settings_normalizes_invalid_filter(app_module, client):
     assert payload["settings"]["filter"] == "all"
     assert payload["settings"]["gps_port"] == "/dev/ttyUSB0"
     assert app_module.SETTINGS_FILE.exists()
+
+
+def test_detection_patterns_endpoint_returns_default_groups(client):
+    response = client.get("/api/patterns")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["macs"]["enabled"] is True
+    assert "58:8e:81" in payload["macs"]["values"]
+    assert payload["mfr"]["values"] == ["0x09C8"]
+
+
+def test_update_detection_patterns_normalizes_values(client):
+    response = client.post(
+        "/api/patterns",
+        json={
+            "macs": {"enabled": True, "values": ["588E81", "58:8E:81"]},
+            "macs_mfr": {"enabled": False, "values": ["F46ADD"]},
+            "macs_soundthinking": {"enabled": True, "values": ["d411d6"]},
+            "names": {"enabled": True, "values": ["  My Tracker  "]},
+            "mfr": {"enabled": True, "values": ["09c8"]},
+            "raven": {"enabled": True, "values": ["00003100-0000-1000-8000-00805F9B34FB"]},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["patterns"]["macs"]["values"] == ["58:8e:81"]
+    assert payload["patterns"]["macs_mfr"]["enabled"] is False
+    assert payload["patterns"]["mfr"]["values"] == ["0x09C8"]
+    assert payload["patterns"]["raven"]["values"] == ["00003100-0000-1000-8000-00805f9b34fb"]

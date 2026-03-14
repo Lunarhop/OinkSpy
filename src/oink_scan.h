@@ -5,9 +5,13 @@
 #include <stdint.h>
 
 class NimBLEAdvertisedDevice;
+class Print;
 
 namespace oink::scan {
 
+void loadProfile();
+void writeProfileJson(Print& out);
+bool updateProfileFromJson(const String& json, String& error);
 void setupBle();
 void onCompanionChange();
 void pollScan();
@@ -18,11 +22,5 @@ bool gpsIsFresh();
 int countRavenDetections();
 int countGpsTaggedDetections();
 void resetDetections();
-const char* const* flockMacPrefixes(size_t& count);
-const char* const* flockManufacturerPrefixes(size_t& count);
-const char* const* soundThinkingPrefixes(size_t& count);
-const char* const* deviceNamePatterns(size_t& count);
-const uint16_t* bleManufacturerIds(size_t& count);
-const char* const* ravenServiceUuids(size_t& count);
 
 } // namespace oink::scan

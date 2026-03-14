@@ -1,5 +1,5 @@
 {
-  "gps_port": "",
-  "flock_port": "",
-  "filter": "device_name"
+  "gps_port": "oinkspy:gnss",
+  "flock_port": "/dev/ttyACM0",
+  "filter": "all"
 }
