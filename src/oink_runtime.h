@@ -4,6 +4,14 @@
 
 namespace oink {
 
+struct WardriveConfig {
+    bool enabled;
+    uint16_t flushIntervalSeconds;
+    uint16_t fileRotationMb;
+    uint16_t dedupWindowSeconds;
+    char logFormat[8];
+};
+
 struct RuntimeConfig {
     char apSsid[33];
     char apPassword[65];
@@ -23,6 +31,7 @@ struct RuntimeConfig {
     bool sdJsonEnabled;
     bool sdCsvEnabled;
     bool gnssEnabled;
+    WardriveConfig wardrive;
 };
 
 } // namespace oink

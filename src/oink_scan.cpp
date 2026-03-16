@@ -566,7 +566,15 @@ class BleCallbacks : public NimBLEAdvertisedDeviceCallbacks {
         }
 
         int idx = addDetection(addrStr.c_str(), name.c_str(), rssi, method, isRaven, ravenFW);
-        int count = idx >= 0 ? oink::gApp.detections[idx].count : 0;
+        int count = 0;
+        oink::Detection wardriveDetection = {};
+        bool haveWardriveDetection = false;
+        if (idx >= 0 && oink::gApp.mutex && xSemaphoreTake(oink::gApp.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            count = oink::gApp.detections[idx].count;
+            wardriveDetection = oink::gApp.detections[idx];
+            haveWardriveDetection = true;
+            xSemaphoreGive(oink::gApp.mutex);
+        }
         printf("[OINK-YOU] DETECTED: %s %s RSSI:%d [%s] count:%d\n",
                addrStr.c_str(),
                name.c_str(),
@@ -589,6 +597,9 @@ class BleCallbacks : public NimBLEAdvertisedDeviceCallbacks {
                                         gpsLon,
                                         gpsAcc,
                                         count);
+        if (haveWardriveDetection) {
+            oink::log::appendWardriveDetection(wardriveDetection);
+        }
 
         char gpsBuf[96] = "";
         if (hasGps) {

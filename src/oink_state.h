@@ -103,6 +103,11 @@ struct AppState {
     unsigned long logEventsQueued;
     unsigned long logEventsWritten;
     unsigned long logEventsDropped;
+    bool wardriveActive;
+    unsigned long wardriveLastFlushMs;
+    unsigned long wardriveLastRotateMs;
+    size_t wardriveCurrentFileBytes;
+    char wardriveCurrentPath[96];
     char sessionCsvPath[64];
     char sessionJsonlPath[64];
     char dailyCsvPath[64];

@@ -16,5 +16,12 @@
   "sd_logging_enabled": true,
   "sd_json_enabled": true,
   "sd_csv_enabled": true,
-  "gnss_enabled": true
+  "gnss_enabled": true,
+  "wardrive": {
+    "enabled": false,
+    "flush_interval_seconds": 60,
+    "file_rotation_mb": 100,
+    "dedup_window_seconds": 300,
+    "log_format": "csv"
+  }
 }

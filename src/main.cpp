@@ -131,6 +131,7 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 <span id="sysStore">Storage: checking</span>
 <span id="sysGnss">GNSS: checking</span>
 <span id="sysRtc">RTC: checking</span>
+<span id="sysWardrive">Wardrive: checking</span>
 </div>
 <div class="launch" id="launchGuide"><strong id="launchTitle">Open the full browser for GPS</strong><span id="launchText">If this page opened inside a Wi-Fi sign-in helper, location is more reliable after opening the dashboard in your phone browser.</span><div class="rw"><button class="btn" onclick="openFullBrowser()" style="background:#22c55e">OPEN IN BROWSER</button><button class="btn" onclick="dismissLaunchGuide(true)" style="background:#6366f1">CONTINUE HERE</button></div></div>
 </div>
@@ -139,6 +140,13 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 <div class="pn" id="p1"><div id="hL"><div class="empty">Loading prior session...</div></div></div>
 <div class="pn" id="p2"><div id="pC">Loading patterns...</div></div>
 <div class="pn" id="p3">
+<h4>WARDRIVE MODE</h4>
+<p style="font-size:10px;color:#f9a8d4;margin-bottom:8px">Continuously write deduplicated detection rows to SD card CSV while scanning is active.</p>
+<div class="dbg">
+<div class="dbgh"><label>Wardrive Mode</label><label><input id="wardriveToggle" type="checkbox" onchange="setWardriveEnabled(this.checked)"> enabled</label></div>
+<div class="dbh" id="wardriveStatus">Wardrive: checking</div>
+</div>
+<hr class="sep">
 <h4>EXPORT DETECTIONS</h4>
 <p style="font-size:10px;color:#f9a8d4;margin-bottom:8px">Download current session to import into the companion dashboard</p>
 <button class="btn" onclick="location.href='/api/export/json'">DOWNLOAD JSON</button>
@@ -190,9 +198,11 @@ function patternPayload(reset){if(reset){return {reset_defaults:true};} let payl
 function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{renderPatternEditor(p);window._pL=1;}).catch(()=>{document.getElementById('pC').innerHTML='<div class="empty">Detection database unavailable</div>';});}
 function savePat(reset){fetch('/api/patterns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(patternPayload(reset))}).then(r=>r.json()).then(p=>{if(p.status&&p.status!=='success'){throw new Error(p.message||'save failed');} loadPat(); alert(reset?'Detection parameters reset to defaults.':'Detection parameters saved.');}).catch(err=>{alert('Detection parameter update failed: '+err.message);});}
 function loadEvents(){fetch('/api/events').then(r=>r.json()).then(d=>{E=d;let el=document.getElementById('eL');if(!E.length){el.innerHTML='<div class="empty">No recent events yet</div>';return;} el.innerHTML=E.map(eventCard).join('');}).catch(()=>{document.getElementById('eL').innerHTML='<div class="empty">Recent events unavailable</div>';});}
+function loadWardriveStatus(){fetch('/api/wardrive').then(r=>r.json()).then(w=>{let toggle=document.getElementById('wardriveToggle');if(toggle)toggle.checked=!!w.enabled;let txt='Wardrive: '+(w.active?'logging to '+(w.current_path||'SD'):(w.message||'idle'));let color=w.active?'#22c55e':w.enabled?'#facc15':'#f9a8d4';setTxt('wardriveStatus',txt,color);setTxt('sysWardrive','Wardrive: '+(w.active?'ON':w.enabled?'ARMED':'OFF'),color);}).catch(()=>{setTxt('wardriveStatus','Wardrive: unavailable','#ef4444');setTxt('sysWardrive','Wardrive: unavailable','#ef4444');});}
+function setWardriveEnabled(enabled){fetch('/api/wardrive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!!enabled})}).then(async r=>{let data=await r.json().catch(()=>({}));if(!r.ok||data.status==='error'){throw new Error(data.message||'Wardrive update failed');} loadWardriveStatus(); if(data.message&&data.message!=='ok'){alert(data.message);} }).catch(err=>{let toggle=document.getElementById('wardriveToggle');if(toggle)toggle.checked=!enabled;loadWardriveStatus();alert('Wardrive update failed: '+err.message);});}
 function loadOtaStatus(){fetch('/api/ota/status').then(r=>r.json()).then(s=>{let txt=!s.enabled?'OTA: disabled in config':s.in_progress?'OTA: writing '+s.bytes_written+' bytes':s.pending_reboot?'OTA: update applied, reboot pending':'OTA: '+(s.message||'idle');setTxt('otaStatus',txt,s.error?'#ef4444':s.pending_reboot?'#22c55e':'#f9a8d4');}).catch(()=>{setTxt('otaStatus','OTA: unavailable','#ef4444');});}
 function uploadOta(){let fileInput=document.getElementById('otaFile');if(!fileInput||!fileInput.files||!fileInput.files.length){alert('Choose a firmware .bin file first.');return;} let fd=new FormData();fd.append('firmware',fileInput.files[0]);setTxt('otaStatus','OTA: uploading...','#facc15');fetch('/api/ota',{method:'POST',body:fd}).then(async r=>{let data=await r.json().catch(()=>({}));if(!r.ok||data.status!=='success'){throw new Error(data.message||'OTA upload failed');} setTxt('otaStatus','OTA: '+(data.message||'success'),'#22c55e'); alert(data.message||'Firmware updated. The device will reboot shortly.');}).catch(err=>{setTxt('otaStatus','OTA: '+err.message,'#ef4444'); alert('OTA upload failed: '+err.message);}).finally(()=>loadOtaStatus());}
-function loadPortalMeta(){fetch('/api/time').then(r=>r.json()).then(t=>{setTxt('sysClock',t.synced?'Time: '+t.time_source+' '+t.iso8601:'Time: waiting for sync',t.synced?'#22c55e':'#facc15');}).catch(()=>{setTxt('sysClock','Time: unavailable','#ef4444');});fetch('/api/storage').then(r=>r.json()).then(s=>{let txt=s.sd_ready?'Storage: SD ready':'Storage: SD missing';if(s.log_events_dropped>0)txt+=' drops:'+s.log_events_dropped;setTxt('sysStore',txt,s.sd_ready&&s.sd_logging_enabled?'#22c55e':'#f59e0b');}).catch(()=>{setTxt('sysStore','Storage: unavailable','#ef4444');});fetch('/api/gnss').then(r=>r.json()).then(g=>{let txt=!g.enabled?'GNSS: off':g.has_fix?'GNSS: fix '+g.satellites+' sats':g.gps_seen?'GNSS: seen, no fix yet':'GNSS: waiting on D6/D7';setTxt('sysGnss',txt,g.has_fix?'#22c55e':g.gps_seen?'#facc15':'#f9a8d4');}).catch(()=>{setTxt('sysGnss','GNSS: unavailable','#ef4444');});fetch('/api/rtc').then(r=>r.json()).then(rt=>{let txt=!rt.enabled?'RTC: off':!rt.present?'RTC: not found':rt.time_valid?'RTC: '+rt.iso8601:'RTC: found, time unset';setTxt('sysRtc',txt,rt.time_valid?'#22c55e':rt.present?'#facc15':'#f9a8d4');}).catch(()=>{setTxt('sysRtc','RTC: unavailable','#ef4444');});loadOtaStatus();}
+function loadPortalMeta(){fetch('/api/time').then(r=>r.json()).then(t=>{setTxt('sysClock',t.synced?'Time: '+t.time_source+' '+t.iso8601:'Time: waiting for sync',t.synced?'#22c55e':'#facc15');}).catch(()=>{setTxt('sysClock','Time: unavailable','#ef4444');});fetch('/api/storage').then(r=>r.json()).then(s=>{let txt=s.sd_ready?'Storage: SD ready':'Storage: SD missing';if(s.log_events_dropped>0)txt+=' drops:'+s.log_events_dropped;setTxt('sysStore',txt,s.sd_ready&&s.sd_logging_enabled?'#22c55e':'#f59e0b');}).catch(()=>{setTxt('sysStore','Storage: unavailable','#ef4444');});fetch('/api/gnss').then(r=>r.json()).then(g=>{let txt=!g.enabled?'GNSS: off':g.has_fix?'GNSS: fix '+g.satellites+' sats':g.gps_seen?'GNSS: seen, no fix yet':'GNSS: waiting on D6/D7';setTxt('sysGnss',txt,g.has_fix?'#22c55e':g.gps_seen?'#facc15':'#f9a8d4');}).catch(()=>{setTxt('sysGnss','GNSS: unavailable','#ef4444');});fetch('/api/rtc').then(r=>r.json()).then(rt=>{let txt=!rt.enabled?'RTC: off':!rt.present?'RTC: not found':rt.time_valid?'RTC: '+rt.iso8601:'RTC: found, time unset';setTxt('sysRtc',txt,rt.time_valid?'#22c55e':rt.present?'#facc15':'#f9a8d4');}).catch(()=>{setTxt('sysRtc','RTC: unavailable','#ef4444');});loadWardriveStatus();loadOtaStatus();}
 let _gW=null,_gOk=false,_gTried=false,_gPerm='unknown',_gPermStatus=null;
 function setGPSBadge(text,color,title){let g=document.getElementById('sG');g.textContent=text;g.style.color=color||'#fda4af';g.title=title||'';}
 function stopGPS(){if(_gW!==null&&navigator.geolocation){navigator.geolocation.clearWatch(_gW);} _gW=null;}
@@ -425,6 +435,47 @@ void setupServer() {
         oink::rtc::writeStatusJson(*resp);
         request->send(resp);
     });
+    gServer.on("/api/wardrive", HTTP_GET, [](AsyncWebServerRequest* request) {
+        AsyncResponseStream* resp = request->beginResponseStream("application/json");
+        oink::log::writeWardriveStatusJson(*resp);
+        request->send(resp);
+    });
+    gServer.on("/api/wardrive", HTTP_POST, [](AsyncWebServerRequest* request) {}, nullptr,
+               [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+                   String* body = static_cast<String*>(request->_tempObject);
+                   if (index == 0 || !body) {
+                       body = new String();
+                       body->reserve(total);
+                       request->_tempObject = body;
+                   }
+                   for (size_t i = 0; i < len; ++i) {
+                       (*body) += static_cast<char>(data[i]);
+                   }
+                   if (index + len != total) {
+                       return;
+                   }
+
+                   JsonDocument doc;
+                   DeserializationError err = deserializeJson(doc, *body);
+                   delete body;
+                   request->_tempObject = nullptr;
+                   if (err || !doc.is<JsonObject>() || !doc["enabled"].is<bool>()) {
+                       request->send(400, "application/json", "{\"status\":\"error\",\"message\":\"enabled boolean required\"}");
+                       return;
+                   }
+
+                   String message;
+                   bool ok = oink::settings::setWardriveEnabled(doc["enabled"].as<bool>(), true, message);
+                   if (!ok) {
+                       String payload = String("{\"status\":\"error\",\"message\":\"") + message + "\"}";
+                       request->send(400, "application/json", payload);
+                       return;
+                   }
+
+                   String payload = String("{\"status\":\"success\",\"message\":\"") +
+                                    (message.length() ? message : "ok") + "\"}";
+                   request->send(200, "application/json", payload);
+               });
 
     gServer.on("/api/patterns", HTTP_GET, [](AsyncWebServerRequest* request) {
         AsyncResponseStream* resp = request->beginResponseStream("application/json");
@@ -691,7 +742,8 @@ void handleSerialByte(char c) {
             return;
         }
         gSerialLine[gSerialLineLength] = '\0';
-        if (!oink::gnss::handleCommand(gSerialLine, Serial)) {
+        if (!oink::gnss::handleCommand(gSerialLine, Serial) &&
+            !oink::settings::handleCommand(gSerialLine, Serial)) {
             printf("[OINK-YOU] Serial command ignored: %s\n", gSerialLine);
         }
         gSerialLineLength = 0;
@@ -781,13 +833,14 @@ void setup() {
     printf("[OINK-YOU] RTC: %s\n",
            !rtcStatus.enabled ? "DISABLED" : !rtcStatus.present ? "NOT FOUND" : rtcStatus.timeValid ? rtcStatus.iso8601 : "PRESENT, TIME INVALID");
     printf("[OINK-YOU] OTA: %s\n", gApp.runtimeConfig.otaEnabled ? "ENABLED (/api/ota)" : "DISABLED");
+    printf("[OINK-YOU] Wardrive: %s\n", gApp.runtimeConfig.wardrive.enabled ? "ENABLED (/api/wardrive)" : "DISABLED");
     oink::gnss::printStatus(Serial);
     if (gApp.sdReady && gApp.runtimeConfig.sdLoggingEnabled) {
         printf("[OINK-YOU] SD session CSV: %s\n", oink::log::sessionCsvPath());
         printf("[OINK-YOU] SD session JSONL: %s\n", oink::log::sessionJsonlPath());
     }
     printf("[OINK-YOU] Controls: short=scan toggle, long=audio mode, double=bookmark\n");
-    printf("[OINK-YOU] Serial commands: gnss status\n");
+    printf("[OINK-YOU] Serial commands: gnss status, wardrive status|on|off|toggle\n");
     printf("[OINK-YOU] Detection methods: MAC prefix, device name, manufacturer ID, Raven UUID\n");
     printf("[OINK-YOU] Dashboard: http://192.168.4.1\n");
     printf("[OINK-YOU] Ready - BLE GATT + AP mode + OLED\n\n");
@@ -811,6 +864,7 @@ void loop() {
 
     if (gPendingRestartAtMs != 0 && millis() >= gPendingRestartAtMs) {
         printf("[OINK-YOU] Restarting after OTA\n");
+        oink::log::endWardriveSession();
         oink::log::saveSession();
         delay(100);
         ESP.restart();
@@ -818,6 +872,7 @@ void loop() {
 
     oink::scan::pollScan();
     oink::log::pollAutoSave();
+    oink::log::pollWardrive();
     delay(20);
 }
 

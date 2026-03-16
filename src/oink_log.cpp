@@ -22,10 +22,12 @@ SPIClass gSdSpi(FSPI);
 constexpr const char* kLogsDir = "logs";
 constexpr const char* kSessionsDir = "logs/sessions";
 constexpr const char* kDailyDir = "logs/daily";
+constexpr const char* kWardriveDir = "logs/wardrive";
 constexpr const char* kUnsyncedDayToken = "unsynced";
 constexpr const char* kFirmwareVersion = "0.2.0-dev";
 constexpr size_t kLogQueueLength = 48;
 constexpr uint32_t kLogTaskStack = 6144;
+constexpr size_t kWardriveDedupEntryCount = 96;
 
 enum class LogEventType : uint8_t {
     Detection,
@@ -50,6 +52,17 @@ struct LogEvent {
 
 QueueHandle_t gLogQueue = nullptr;
 TaskHandle_t gLogTaskHandle = nullptr;
+FsFile gWardriveFile;
+uint16_t gWardriveFileIndex = 0;
+
+struct WardriveDedupEntry {
+    char mac[18];
+    char method[32];
+    unsigned long lastLoggedMs;
+};
+
+WardriveDedupEntry gWardriveDedup[kWardriveDedupEntryCount] = {};
+size_t gWardriveDedupNext = 0;
 
 void rememberRecentEvent(const LogEvent& event) {
     if (!oink::gApp.mutex || xSemaphoreTake(oink::gApp.mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -98,6 +111,23 @@ void ensureDir(const char* path) {
     }
 }
 
+void ensureParentDirs(const char* path) {
+    if (!path || !path[0]) {
+        return;
+    }
+
+    char buffer[128];
+    strlcpy(buffer, path, sizeof(buffer));
+    for (char* cursor = buffer + 1; *cursor; ++cursor) {
+        if (*cursor != '/') {
+            continue;
+        }
+        *cursor = '\0';
+        ensureDir(buffer);
+        *cursor = '/';
+    }
+}
+
 bool appendLine(const char* path, const String& line) {
     FsFile file = gSd.open(path, O_WRONLY | O_CREAT | O_APPEND);
     if (!file) {
@@ -116,6 +146,178 @@ bool appendLine(const char* path, const String& line) {
     }
 
     oink::gApp.sdLoggingHealthy = true;
+    return true;
+}
+
+void resetWardriveDedup() {
+    memset(gWardriveDedup, 0, sizeof(gWardriveDedup));
+    gWardriveDedupNext = 0;
+}
+
+bool wardriveCanRun(String& message) {
+    message = "";
+    if (!oink::gApp.runtimeConfig.wardrive.enabled) {
+        message = "Wardrive Mode disabled";
+        return false;
+    }
+    if (!oink::gApp.runtimeConfig.sdLoggingEnabled) {
+        message = "Enable SD logging first";
+        return false;
+    }
+    if (!oink::gApp.sdReady) {
+        message = "Insert and mount an SD card";
+        return false;
+    }
+    if (strcasecmp(oink::gApp.runtimeConfig.wardrive.logFormat, "csv") != 0) {
+        message = "Unsupported wardrive log format";
+        return false;
+    }
+    return true;
+}
+
+size_t wardriveRotationBytes() {
+    return static_cast<size_t>(oink::gApp.runtimeConfig.wardrive.fileRotationMb) * 1024UL * 1024UL;
+}
+
+String csvField(const char* text);
+
+String buildWardriveCsvLine(const oink::Detection& detection) {
+    char isoBuffer[40];
+    oink::timeutil::formatIso8601(isoBuffer, sizeof(isoBuffer));
+    time_t epoch = oink::timeutil::currentEpoch();
+
+    String line;
+    line.reserve(320);
+    line += String(millis());
+    line += ',';
+    line += String(static_cast<unsigned long>(epoch));
+    line += ',';
+    line += csvField(isoBuffer);
+    line += ',';
+    line += csvField(oink::timeutil::timeSourceLabel());
+    line += ',';
+    line += oink::settings::deviceId();
+    line += ',';
+    line += String(oink::settings::bootCount());
+    line += ',';
+    line += csvField(detection.mac);
+    line += ',';
+    line += csvField(detection.name);
+    line += ',';
+    line += csvField(detection.method);
+    line += ',';
+    line += String(detection.rssi);
+    line += ',';
+    line += String(detection.count);
+    line += ',';
+    line += (detection.isRaven ? "true" : "false");
+    line += ',';
+    line += csvField(detection.ravenFW);
+    if (detection.hasGPS) {
+        line += ',';
+        line += String(detection.gpsLat, 8);
+        line += ',';
+        line += String(detection.gpsLon, 8);
+        line += ',';
+        line += String(detection.gpsAcc, 1);
+    } else {
+        line += ",,,";
+    }
+    return line;
+}
+
+bool openWardriveFile() {
+    String error;
+    if (!wardriveCanRun(error)) {
+        return false;
+    }
+
+    ensureDir(kLogsDir);
+    ensureDir(kWardriveDir);
+
+    char dayToken[16];
+    oink::timeutil::currentDayToken(dayToken, sizeof(dayToken));
+    if (!dayToken[0]) {
+        strlcpy(dayToken, kUnsyncedDayToken, sizeof(dayToken));
+    }
+
+    snprintf(oink::gApp.wardriveCurrentPath,
+             sizeof(oink::gApp.wardriveCurrentPath),
+             "%s/wardrive-%s-boot%06lu-%03u.csv",
+             kWardriveDir,
+             dayToken,
+             oink::settings::bootCount(),
+             static_cast<unsigned>(gWardriveFileIndex));
+
+    gWardriveFile = gSd.open(oink::gApp.wardriveCurrentPath, O_WRONLY | O_CREAT | O_APPEND);
+    if (!gWardriveFile) {
+        oink::gApp.wardriveActive = false;
+        return false;
+    }
+
+    oink::gApp.wardriveCurrentFileBytes = static_cast<size_t>(gWardriveFile.fileSize());
+    if (oink::gApp.wardriveCurrentFileBytes == 0) {
+        gWardriveFile.println("# oinkspy_wardrive=1");
+        gWardriveFile.println("# device_id=" + String(oink::settings::deviceId()));
+        gWardriveFile.println("# boot_count=" + String(oink::settings::bootCount()));
+        gWardriveFile.println("millis,epoch,iso8601,time_source,device_id,boot_count,mac,name,method,rssi,count,is_raven,raven_fw,gps_lat,gps_lon,gps_acc");
+        gWardriveFile.flush();
+        oink::gApp.wardriveCurrentFileBytes = static_cast<size_t>(gWardriveFile.fileSize());
+    }
+
+    oink::gApp.wardriveActive = true;
+    oink::gApp.wardriveLastFlushMs = millis();
+    oink::gApp.wardriveLastRotateMs = millis();
+    printf("[OINK-YOU] Wardrive log active: %s\n", oink::gApp.wardriveCurrentPath);
+    return true;
+}
+
+void closeWardriveFile() {
+    if (gWardriveFile) {
+        gWardriveFile.flush();
+        gWardriveFile.close();
+    }
+    oink::gApp.wardriveActive = false;
+}
+
+void clearWardriveRuntimeState() {
+    oink::gApp.wardriveActive = false;
+    oink::gApp.wardriveLastFlushMs = 0;
+    oink::gApp.wardriveLastRotateMs = 0;
+    oink::gApp.wardriveCurrentFileBytes = 0;
+    oink::gApp.wardriveCurrentPath[0] = '\0';
+}
+
+bool shouldLogWardrive(const oink::Detection& detection) {
+    if (!oink::gApp.wardriveActive) {
+        return false;
+    }
+
+    unsigned long windowMs =
+        static_cast<unsigned long>(oink::gApp.runtimeConfig.wardrive.dedupWindowSeconds) * 1000UL;
+    if (windowMs == 0) {
+        return true;
+    }
+
+    for (size_t i = 0; i < kWardriveDedupEntryCount; ++i) {
+        WardriveDedupEntry& entry = gWardriveDedup[i];
+        if (entry.mac[0] == '\0') {
+            continue;
+        }
+        if (strcasecmp(entry.mac, detection.mac) == 0 && strcasecmp(entry.method, detection.method) == 0) {
+            if (millis() - entry.lastLoggedMs < windowMs) {
+                return false;
+            }
+            entry.lastLoggedMs = millis();
+            return true;
+        }
+    }
+
+    WardriveDedupEntry& slot = gWardriveDedup[gWardriveDedupNext];
+    strlcpy(slot.mac, detection.mac, sizeof(slot.mac));
+    strlcpy(slot.method, detection.method, sizeof(slot.method));
+    slot.lastLoggedMs = millis();
+    gWardriveDedupNext = (gWardriveDedupNext + 1) % kWardriveDedupEntryCount;
     return true;
 }
 
@@ -570,6 +772,32 @@ bool readSdTextFile(const char* path, String& out) {
     return out.length() > 0;
 }
 
+bool writeSdTextFile(const char* path, const String& content) {
+    if (!gApp.sdReady || !path || !path[0]) {
+        return false;
+    }
+
+    ensureParentDirs(path);
+    FsFile file = gSd.open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    if (!file) {
+        printf("[OINK-YOU] SD open failed: %s\n", path);
+        gApp.sdLoggingHealthy = false;
+        return false;
+    }
+
+    size_t written = file.print(content);
+    file.flush();
+    file.close();
+    if (written != content.length()) {
+        printf("[OINK-YOU] SD write failed: %s\n", path);
+        gApp.sdLoggingHealthy = false;
+        return false;
+    }
+
+    gApp.sdLoggingHealthy = true;
+    return true;
+}
+
 void saveSession() {
     if (!gApp.spiffsReady || !gApp.mutex) {
         return;
@@ -639,6 +867,136 @@ void pollAutoSave() {
 
 void prepareSdLogs() {
     ensureSdLogFiles();
+    if (gApp.runtimeConfig.wardrive.enabled) {
+        beginWardriveSession();
+    }
+}
+
+void beginWardriveSession() {
+    closeWardriveFile();
+    clearWardriveRuntimeState();
+    resetWardriveDedup();
+    gWardriveFileIndex = 0;
+
+    String message;
+    if (!wardriveCanRun(message)) {
+        if (message.length()) {
+            printf("[OINK-YOU] Wardrive inactive: %s\n", message.c_str());
+        }
+        return;
+    }
+
+    if (!openWardriveFile()) {
+        printf("[OINK-YOU] Wardrive file open failed\n");
+    }
+}
+
+void endWardriveSession() {
+    closeWardriveFile();
+    clearWardriveRuntimeState();
+}
+
+void pollWardrive() {
+    if (!gApp.runtimeConfig.wardrive.enabled || !gApp.wardriveActive || !gWardriveFile) {
+        return;
+    }
+
+    unsigned long flushIntervalMs =
+        static_cast<unsigned long>(gApp.runtimeConfig.wardrive.flushIntervalSeconds) * 1000UL;
+    if (flushIntervalMs == 0) {
+        flushIntervalMs = 1000UL;
+    }
+    if (millis() - gApp.wardriveLastFlushMs < flushIntervalMs) {
+        return;
+    }
+
+    gWardriveFile.flush();
+    gApp.wardriveLastFlushMs = millis();
+}
+
+void appendWardriveDetection(const Detection& detection) {
+    if (!gApp.runtimeConfig.wardrive.enabled) {
+        return;
+    }
+
+    if (!gApp.wardriveActive || !gWardriveFile) {
+        beginWardriveSession();
+        if (!gApp.wardriveActive || !gWardriveFile) {
+            return;
+        }
+    }
+
+    if (!shouldLogWardrive(detection)) {
+        return;
+    }
+
+    if (gApp.wardriveCurrentFileBytes >= wardriveRotationBytes()) {
+        closeWardriveFile();
+        ++gWardriveFileIndex;
+        if (!openWardriveFile()) {
+            printf("[OINK-YOU] Wardrive rotation failed\n");
+            return;
+        }
+    }
+
+    String line = buildWardriveCsvLine(detection);
+    if (!gWardriveFile.println(line)) {
+        printf("[OINK-YOU] Wardrive append failed: %s\n", gApp.wardriveCurrentPath);
+        gApp.sdLoggingHealthy = false;
+        closeWardriveFile();
+        return;
+    }
+
+    gApp.sdLoggingHealthy = true;
+    gApp.wardriveCurrentFileBytes = static_cast<size_t>(gWardriveFile.fileSize());
+    unsigned long flushIntervalMs =
+        static_cast<unsigned long>(gApp.runtimeConfig.wardrive.flushIntervalSeconds) * 1000UL;
+    if (flushIntervalMs == 0 || millis() - gApp.wardriveLastFlushMs >= flushIntervalMs) {
+        gWardriveFile.flush();
+        gApp.wardriveLastFlushMs = millis();
+    }
+}
+
+WardriveStatus wardriveStatus() {
+    WardriveStatus status = {};
+    status.enabled = gApp.runtimeConfig.wardrive.enabled;
+    status.active = gApp.wardriveActive;
+    status.sdReady = gApp.sdReady;
+    status.flushIntervalSeconds = gApp.runtimeConfig.wardrive.flushIntervalSeconds;
+    status.fileRotationMb = gApp.runtimeConfig.wardrive.fileRotationMb;
+    status.dedupWindowSeconds = gApp.runtimeConfig.wardrive.dedupWindowSeconds;
+    strlcpy(status.logFormat, gApp.runtimeConfig.wardrive.logFormat, sizeof(status.logFormat));
+    strlcpy(status.currentPath, gApp.wardriveCurrentPath, sizeof(status.currentPath));
+    status.currentFileBytes = static_cast<unsigned long>(gApp.wardriveCurrentFileBytes);
+
+    String message;
+    status.canStart = wardriveCanRun(message);
+    status.configValid = strcasecmp(gApp.runtimeConfig.wardrive.logFormat, "csv") == 0;
+    if (status.active && status.currentPath[0]) {
+        strlcpy(status.message, "Logging detections to SD", sizeof(status.message));
+    } else if (message.length()) {
+        strlcpy(status.message, message.c_str(), sizeof(status.message));
+    } else {
+        strlcpy(status.message, "Ready", sizeof(status.message));
+    }
+    return status;
+}
+
+void writeWardriveStatusJson(Print& out) {
+    WardriveStatus status = wardriveStatus();
+    out.printf("{\"enabled\":%s,\"active\":%s,\"can_start\":%s,\"sd_ready\":%s,\"config_valid\":%s,\"flush_interval_seconds\":%lu,\"file_rotation_mb\":%lu,\"dedup_window_seconds\":%lu,\"log_format\":\"%s\",\"current_path\":\"%s\",\"current_file_bytes\":%lu,\"message\":\"%s\"}",
+               status.enabled ? "true" : "false",
+               status.active ? "true" : "false",
+               status.canStart ? "true" : "false",
+               status.sdReady ? "true" : "false",
+               status.configValid ? "true" : "false",
+               status.flushIntervalSeconds,
+               status.fileRotationMb,
+               status.dedupWindowSeconds,
+               status.logFormat,
+               status.currentPath,
+               status.currentFileBytes,
+               status.message);
 }
 
 void appendDetectionEvent(const char* mac,

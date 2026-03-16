@@ -15,6 +15,70 @@ constexpr const char* kPrefsNamespace = "oinkspy";
 constexpr const char* kConfigKey = "config_json";
 constexpr const char* kBootCountKey = "boot_count";
 constexpr const char* kConfigPath = "config/oinkspy.json";
+constexpr uint16_t kWardriveFlushIntervalDefault = 60;
+constexpr uint16_t kWardriveFlushIntervalMin = 15;
+constexpr uint16_t kWardriveFlushIntervalMax = 600;
+constexpr uint16_t kWardriveRotationDefault = 100;
+constexpr uint16_t kWardriveRotationMin = 16;
+constexpr uint16_t kWardriveRotationMax = 1024;
+constexpr uint16_t kWardriveDedupDefault = 300;
+constexpr uint16_t kWardriveDedupMin = 0;
+constexpr uint16_t kWardriveDedupMax = 3600;
+
+uint16_t clampUint16(unsigned long value, uint16_t minValue, uint16_t maxValue, uint16_t defaultValue) {
+    if (value < minValue || value > maxValue) {
+        return defaultValue;
+    }
+    return static_cast<uint16_t>(value);
+}
+
+void loadWardriveDefaults() {
+    oink::gApp.runtimeConfig.wardrive.enabled = false;
+    oink::gApp.runtimeConfig.wardrive.flushIntervalSeconds = kWardriveFlushIntervalDefault;
+    oink::gApp.runtimeConfig.wardrive.fileRotationMb = kWardriveRotationDefault;
+    oink::gApp.runtimeConfig.wardrive.dedupWindowSeconds = kWardriveDedupDefault;
+    strlcpy(oink::gApp.runtimeConfig.wardrive.logFormat, "csv", sizeof(oink::gApp.runtimeConfig.wardrive.logFormat));
+}
+
+void clampWardriveConfig() {
+    oink::gApp.runtimeConfig.wardrive.flushIntervalSeconds = clampUint16(
+        oink::gApp.runtimeConfig.wardrive.flushIntervalSeconds,
+        kWardriveFlushIntervalMin,
+        kWardriveFlushIntervalMax,
+        kWardriveFlushIntervalDefault);
+    oink::gApp.runtimeConfig.wardrive.fileRotationMb = clampUint16(
+        oink::gApp.runtimeConfig.wardrive.fileRotationMb,
+        kWardriveRotationMin,
+        kWardriveRotationMax,
+        kWardriveRotationDefault);
+    oink::gApp.runtimeConfig.wardrive.dedupWindowSeconds = clampUint16(
+        oink::gApp.runtimeConfig.wardrive.dedupWindowSeconds,
+        kWardriveDedupMin,
+        kWardriveDedupMax,
+        kWardriveDedupDefault);
+    if (strcasecmp(oink::gApp.runtimeConfig.wardrive.logFormat, "csv") != 0) {
+        strlcpy(oink::gApp.runtimeConfig.wardrive.logFormat, "csv", sizeof(oink::gApp.runtimeConfig.wardrive.logFormat));
+    }
+}
+
+void mergeWardriveConfig(JsonObject wardriveRoot) {
+    if (!wardriveRoot) {
+        return;
+    }
+
+    oink::gApp.runtimeConfig.wardrive.enabled =
+        wardriveRoot["enabled"] | oink::gApp.runtimeConfig.wardrive.enabled;
+    oink::gApp.runtimeConfig.wardrive.flushIntervalSeconds =
+        wardriveRoot["flush_interval_seconds"] | oink::gApp.runtimeConfig.wardrive.flushIntervalSeconds;
+    oink::gApp.runtimeConfig.wardrive.fileRotationMb =
+        wardriveRoot["file_rotation_mb"] | oink::gApp.runtimeConfig.wardrive.fileRotationMb;
+    oink::gApp.runtimeConfig.wardrive.dedupWindowSeconds =
+        wardriveRoot["dedup_window_seconds"] | oink::gApp.runtimeConfig.wardrive.dedupWindowSeconds;
+    strlcpy(oink::gApp.runtimeConfig.wardrive.logFormat,
+            wardriveRoot["log_format"] | oink::gApp.runtimeConfig.wardrive.logFormat,
+            sizeof(oink::gApp.runtimeConfig.wardrive.logFormat));
+    clampWardriveConfig();
+}
 
 void loadDefaults() {
     memset(&oink::gApp.runtimeConfig, 0, sizeof(oink::gApp.runtimeConfig));
@@ -40,6 +104,7 @@ void loadDefaults() {
 #else
     oink::gApp.runtimeConfig.gnssEnabled = false;
 #endif
+    loadWardriveDefaults();
 }
 
 void mergeConfigJson(const String& jsonText) {
@@ -83,6 +148,8 @@ void mergeConfigJson(const String& jsonText) {
     oink::gApp.runtimeConfig.sdJsonEnabled = root["sd_json_enabled"] | oink::gApp.runtimeConfig.sdJsonEnabled;
     oink::gApp.runtimeConfig.sdCsvEnabled = root["sd_csv_enabled"] | oink::gApp.runtimeConfig.sdCsvEnabled;
     oink::gApp.runtimeConfig.gnssEnabled = root["gnss_enabled"] | oink::gApp.runtimeConfig.gnssEnabled;
+    mergeWardriveConfig(root["wardrive"].as<JsonObject>());
+    clampWardriveConfig();
 }
 
 void populateDeviceId() {
@@ -140,6 +207,161 @@ const char* deviceId() {
 
 unsigned long bootCount() {
     return gApp.bootCount;
+}
+
+String serializeRuntimeConfigJson() {
+    JsonDocument doc;
+    doc["ap_ssid"] = gApp.runtimeConfig.apSsid;
+    doc["ap_password"] = gApp.runtimeConfig.apPassword;
+    doc["timezone"] = gApp.runtimeConfig.timezone;
+    doc["ntp_enabled"] = gApp.runtimeConfig.ntpEnabled;
+    doc["rtc_enabled"] = gApp.runtimeConfig.rtcEnabled;
+    doc["ntp_server_1"] = gApp.runtimeConfig.ntpServer1;
+    doc["ntp_server_2"] = gApp.runtimeConfig.ntpServer2;
+    doc["ota_enabled"] = gApp.runtimeConfig.otaEnabled;
+    doc["buzzer_enabled"] = gApp.runtimeConfig.buzzerEnabled;
+    doc["ble_scan_interval_ms"] = gApp.runtimeConfig.bleScanIntervalMs;
+    doc["standalone_scan_duration_sec"] = gApp.runtimeConfig.standaloneBleScanDurationSec;
+    doc["companion_scan_duration_sec"] = gApp.runtimeConfig.companionBleScanDurationSec;
+    doc["save_interval_ms"] = gApp.runtimeConfig.saveIntervalMs;
+    doc["serial_timeout_ms"] = gApp.runtimeConfig.serialTimeoutMs;
+    doc["sd_logging_enabled"] = gApp.runtimeConfig.sdLoggingEnabled;
+    doc["sd_json_enabled"] = gApp.runtimeConfig.sdJsonEnabled;
+    doc["sd_csv_enabled"] = gApp.runtimeConfig.sdCsvEnabled;
+    doc["gnss_enabled"] = gApp.runtimeConfig.gnssEnabled;
+
+    JsonObject wardrive = doc["wardrive"].to<JsonObject>();
+    wardrive["enabled"] = gApp.runtimeConfig.wardrive.enabled;
+    wardrive["flush_interval_seconds"] = gApp.runtimeConfig.wardrive.flushIntervalSeconds;
+    wardrive["file_rotation_mb"] = gApp.runtimeConfig.wardrive.fileRotationMb;
+    wardrive["dedup_window_seconds"] = gApp.runtimeConfig.wardrive.dedupWindowSeconds;
+    wardrive["log_format"] = gApp.runtimeConfig.wardrive.logFormat;
+
+    String json;
+    serializeJsonPretty(doc, json);
+    json += '\n';
+    return json;
+}
+
+bool persistRuntimeConfig(bool preferSd, String& error) {
+    error = "";
+
+    Preferences prefs;
+    if (!prefs.begin(kPrefsNamespace, false)) {
+        error = "Preferences unavailable";
+        return false;
+    }
+
+    String json = serializeRuntimeConfigJson();
+    prefs.putString(kConfigKey, json);
+    prefs.end();
+
+    if (preferSd) {
+        if (oink::log::sdReady()) {
+            if (!oink::log::writeSdTextFile(kConfigPath, json)) {
+                error = "Saved in NVS but failed to update SD config";
+                return false;
+            }
+        } else {
+            error = "Saved in NVS; SD config unavailable";
+        }
+    }
+
+    return true;
+}
+
+bool setWardriveEnabled(bool enabled, bool persist, String& error) {
+    error = "";
+    if (enabled && !gApp.runtimeConfig.sdLoggingEnabled) {
+        error = "Wardrive Mode requires sd_logging_enabled";
+        return false;
+    }
+    if (enabled && !oink::log::sdReady()) {
+        error = "Wardrive Mode requires a mounted SD card";
+        return false;
+    }
+
+    bool previous = gApp.runtimeConfig.wardrive.enabled;
+    gApp.runtimeConfig.wardrive.enabled = enabled;
+
+    String persistMessage;
+    if (persist && !persistRuntimeConfig(true, persistMessage)) {
+        gApp.runtimeConfig.wardrive.enabled = previous;
+        error = persistMessage.length() ? persistMessage : "Failed to persist Wardrive Mode";
+        return false;
+    }
+
+    if (gApp.runtimeConfig.wardrive.enabled) {
+        oink::log::beginWardriveSession();
+    } else {
+        oink::log::endWardriveSession();
+    }
+
+    if (!persistMessage.isEmpty()) {
+        error = persistMessage;
+    }
+    return true;
+}
+
+void writeWardriveConfigJson(Print& out) {
+    out.printf("{\"enabled\":%s,\"flush_interval_seconds\":%u,\"file_rotation_mb\":%u,\"dedup_window_seconds\":%u,\"log_format\":\"%s\"}",
+               gApp.runtimeConfig.wardrive.enabled ? "true" : "false",
+               static_cast<unsigned>(gApp.runtimeConfig.wardrive.flushIntervalSeconds),
+               static_cast<unsigned>(gApp.runtimeConfig.wardrive.fileRotationMb),
+               static_cast<unsigned>(gApp.runtimeConfig.wardrive.dedupWindowSeconds),
+               gApp.runtimeConfig.wardrive.logFormat);
+}
+
+bool handleCommand(const char* line, Stream& out) {
+    if (!line) {
+        return false;
+    }
+
+    char buffer[64];
+    strlcpy(buffer, line, sizeof(buffer));
+    char* token = strtok(buffer, " ");
+    if (!token || strcasecmp(token, "wardrive") != 0) {
+        return false;
+    }
+
+    char* command = strtok(nullptr, " ");
+    if (!command || strcasecmp(command, "status") == 0) {
+        oink::log::WardriveStatus status = oink::log::wardriveStatus();
+        out.printf("Wardrive: enabled=%s active=%s flush=%us rotate=%uMB dedup=%us format=%s path=%s message=%s\n",
+                   status.enabled ? "yes" : "no",
+                   status.active ? "yes" : "no",
+                   static_cast<unsigned>(status.flushIntervalSeconds),
+                   static_cast<unsigned>(status.fileRotationMb),
+                   static_cast<unsigned>(status.dedupWindowSeconds),
+                   status.logFormat,
+                   status.currentPath[0] ? status.currentPath : "-",
+                   status.message);
+        return true;
+    }
+
+    bool enable = false;
+    if (strcasecmp(command, "on") == 0) {
+        enable = true;
+    } else if (strcasecmp(command, "off") == 0) {
+        enable = false;
+    } else if (strcasecmp(command, "toggle") == 0) {
+        enable = !gApp.runtimeConfig.wardrive.enabled;
+    } else {
+        out.println("Wardrive commands: wardrive status|on|off|toggle");
+        return true;
+    }
+
+    String error;
+    if (!setWardriveEnabled(enable, true, error)) {
+        out.printf("Wardrive update failed: %s\n", error.c_str());
+        return true;
+    }
+
+    out.printf("Wardrive Mode %s\n", gApp.runtimeConfig.wardrive.enabled ? "enabled" : "disabled");
+    if (!error.isEmpty()) {
+        out.printf("Wardrive note: %s\n", error.c_str());
+    }
+    return true;
 }
 
 } // namespace oink::settings
