@@ -10,28 +10,68 @@ OinkSpy is a customized `flock-you` fork adapted for the `Seeed Studio XIAO ESP3
 - Target board: `seeed_xiao_esp32s3`
 - Current firmware shape: single-file prototype in `src/main.cpp`
 - Confirmed features: BLE detection, Raven UUID heuristics, OLED status, buzzer alerts, Wi-Fi AP dashboard, phone GPS tagging, fixed-port Grove GNSS, CSV/JSON/KML export, SPIFFS session persistence
-- In-progress productization: WSL-first development workflow, XIAO Expansion Board integration, SD logging, physical controls, power management, OTA
 
-## 60-Second Quickstart
-For a fast smoke test, build the firmware, then launch the companion dashboard:
+## Quick Start (Windows)
+The recommended path for OinkSpy is `Windows 10/11 + VS Code + PlatformIO IDE`. It keeps build, upload, and serial monitoring in one place and is usually the simplest option when the XIAO board appears in Device Manager as a Windows `COM` port.
 
-```bash
-git clone https://github.com/Lunarhop/OinkSpy
+### Prerequisites
+- Windows 10/11 (x64)
+- [Git for Windows](https://git-scm.com/download/win)
+- [Visual Studio Code](https://code.visualstudio.com/download)
+- [PlatformIO IDE for VS Code](https://marketplace.visualstudio.com/items?itemName=platformio.platformio-ide)
+- If Windows does not detect the board, start with Seeed's official [XIAO ESP32-S3 getting started guide](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/)
+- A USB data cable; charge-only cables will not work for upload or serial monitoring
+
+### Install
+1. Install Git for Windows and VS Code.
+2. Open VS Code and install `PlatformIO IDE` from the Extensions view.
+3. Restart VS Code if the extension prompts you to do so.
+
+### Clone and open
+Clone the repo in PowerShell:
+
+```powershell
+git clone git@github.com:Lunarhop/OinkSpy.git
 cd OinkSpy
-pio run
-cd api
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-python flockyou.py
 ```
 
-Expected results:
+Then open the folder in VS Code:
 
-- `pio run` completes without board-package errors.
-- `python flockyou.py` starts the Flask dashboard on `http://localhost:5000`.
-- The device captive portal becomes available at `http://192.168.4.1` after boot.
-- The dashboard can be exercised with either live serial data or imported JSON, CSV, or KML exports.
+1. Select `File -> Open Folder...`
+2. Choose the `OinkSpy` folder you just cloned
+
+### First run
+The first time you open the project, PlatformIO automatically installs the ESP32 platform, toolchains, and libraries into:
+
+```text
+%USERPROFILE%\.platformio
+```
+
+Give that first setup a few minutes to finish. To verify the install, either open PlatformIO Home in VS Code or run this in the VS Code terminal with a PowerShell shell:
+
+```powershell
+pio --version
+```
+
+### Build, upload, and monitor
+In the VS Code UI, use the PlatformIO toolbar to `Build`, `Upload`, and `Monitor`. If PlatformIO chooses the wrong device, pick the correct Windows `COM` port before uploading or opening the serial monitor.
+
+The same actions are available from the VS Code terminal in PowerShell:
+
+```powershell
+pio run
+pio run -t upload
+pio device monitor
+```
+
+Useful checks:
+
+- `pio run` should complete without board-package errors.
+- `pio run -t upload` should flash the board and reboot it.
+- `pio device monitor` should show boot logs at `115200`.
+- After boot, the device captive portal should be available at `http://192.168.4.1`.
+
+The optional Flask companion dashboard remains in `api/` and can consume live serial data or imported JSON, CSV, and KML exports.
 
 ## Detection Coverage
 OinkSpy currently detects likely surveillance hardware using BLE heuristics:
@@ -72,62 +112,76 @@ Notes:
 - The Expansion Board docs clearly cover OLED, button, buzzer, SD, Grove, battery charging, and RTC support.
 - An onboard RGB LED is not currently treated as available; status feedback should assume buzzer + OLED + single-color LED unless extra hardware is added.
 
-## WSL + VS Code + PlatformIO Workflow
-OinkSpy is now documented as a `WSL-first` PlatformIO project.
+## Optional: Windows + WSL Workflow
+Use the WSL path when you already develop in Linux, want Linux paths and shells, or the repo tooling around OinkSpy fits better in WSL. Prefer the native Windows workflow above when you want the most reliable USB and serial-device experience.
 
-Recommended workflow:
+### Requirements
+- [VS Code Remote - WSL](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-wsl)
+- WSL 2 with a Linux distribution installed
 
-1. Open the repo in `VS Code Remote - WSL`.
-2. Install `PlatformIO Core` inside WSL.
-3. Run builds from WSL so `.pio/` stays local to your Linux environment.
-4. Use whichever upload path is most reliable on your machine:
-   - Recommended: build in WSL, flash and monitor from Windows PlatformIO when the USB device is attached to Windows as `COMx`.
-   - Optional: upload and monitor directly from WSL if the device is passed through as `/dev/ttyUSB*` or `/dev/ttyACM*`.
+### Steps
+Open the repo inside WSL, then launch VS Code from that WSL shell:
 
-Expected serial-port difference:
-
-- Windows: `COMx`
-- WSL/Linux: `/dev/ttyUSB*` or `/dev/ttyACM*`
-
-## Building and Flashing
-Requires `PlatformIO`.
-
-### Build in WSL
 ```bash
-git clone https://github.com/Lunarhop/OinkSpy
+git clone git@github.com:Lunarhop/OinkSpy.git
 cd OinkSpy
+code .
+```
+
+You can also open a WSL folder directly from VS Code by browsing to a UNC path such as:
+
+```text
+\\wsl$\<Distro>\home\<user>\OinkSpy
+```
+
+When VS Code prompts for extensions in the WSL environment, install `PlatformIO IDE` there as well. After that, use the same commands from the WSL terminal:
+
+```bash
 pio run
-```
-
-### Upload Path A: Windows PlatformIO
-Use this when the board is attached to Windows and exposed as `COMx`.
-
-```bash
 pio run -t upload
 pio device monitor
 ```
 
-### Upload Path B: WSL USB passthrough
-Use this only if the device is reliably visible inside WSL.
+### USB and serial note
+- Prefer the native Windows workflow when your board drivers are Windows-only or the device is most stable as a Windows `COM` port.
+- If you want direct serial access from WSL, follow Microsoft's official [Connect USB devices](https://learn.microsoft.com/en-us/windows/wsl/connect-usb) guidance for USB/IP.
+- A practical fallback is to keep the source tree in WSL, then build there and upload or monitor from Windows PlatformIO against the Windows `COM` port.
 
-```bash
+## Optional: Windows CLI-Only (PlatformIO Core)
+If you do not want the full IDE workflow, you can work entirely from PowerShell with PlatformIO Core.
+
+The easiest install path is still `VS Code + PlatformIO IDE`, which bundles Core. If you want a standalone install instead, use the official [PlatformIO installer](https://platformio.org/install) or install it with Python and `pipx`:
+
+```powershell
+winget install --id Python.Python.3.11 -e
+py -m pip install --user pipx
+py -m pipx ensurepath
+pipx install platformio
+pio --version
+```
+
+Run the project commands from the repo root:
+
+```powershell
+pio run
 pio run -t upload
 pio device monitor
 ```
 
-If upload from WSL is unstable, treat `build in WSL + flash in Windows` as the supported fallback rather than a blocker.
+## Other Platforms
+For Linux and macOS, use the same basic flow with the official installers for [PlatformIO](https://platformio.org/install) and [VS Code](https://code.visualstudio.com/download): install the tools, clone the repo, open the folder, then run `pio run`, `pio run -t upload`, and `pio device monitor`.
 
 ## Milestone 0 Environment Check
 Before deeper firmware refactors, verify:
 
-- `pio run` succeeds from your WSL environment
+- `pio run` succeeds from your primary development environment
 - the `seeed_xiao_esp32s3` board package resolves cleanly
 - USB CDC logging works in the upload path you actually use
 - at least one reproducible upload/monitor path is documented for your machine
 
 Acceptance criteria:
 
-- firmware builds reproducibly from WSL
+- firmware builds reproducibly from Windows or WSL
 - upload path is known and repeatable
 - serial logs are readable after flash
 - OLED and buzzer still respond on boot
@@ -220,13 +274,17 @@ GNSS: port=U1 rx=D6 tx=D7 baud=9600 GPS: seen Sats: 7 Fix: yes HDOP: 0.90 last_m
 ## Flask Companion Dashboard
 A desktop analysis dashboard is available in `api/`.
 
-```bash
+```powershell
 cd api
+py -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python flockyou.py
 ```
 
 Then open `http://localhost:5000`.
+
+On Linux, macOS, or WSL, activate the virtual environment with `source .venv/bin/activate` instead.
 
 Common first-run flow:
 
@@ -249,6 +307,7 @@ This project is intended for:
 - educational RF experimentation
 
 Always comply with local laws regarding wireless scanning and radio use.
+
 ## Configuration
 
 ### Precedence
@@ -287,11 +346,39 @@ A starter template is included at `config.oinkspy.example.json`.
 
 ## Troubleshooting
 
+### Windows
+- Missing board drivers: install the USB or UART driver for your board model, then reconnect the device. Common examples are `CP210x` and `CH34x`; for the XIAO ESP32-S3, start with Seeed's official [getting started guide](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/).
+- `Access is denied` during upload: close other apps that may be using the same `COM` port, including another serial monitor, Arduino IDE, or a stale PlatformIO monitor tab.
+- Antivirus or Microsoft Defender blocks tool downloads: allowlist the project folder and the PlatformIO package directory.
+
+```text
+%USERPROFILE%\.platformio
+```
+
+- Long-path problems: enable Win32 long paths in Windows or move the repo closer to the drive root.
+- Permission errors in managed or corporate environments: run VS Code as a standard user, not as Administrator, and make sure your account can write to `%USERPROFILE%\.platformio`.
+
+### Diagnostics
+Run these from the repo root in a PowerShell terminal:
+
+```powershell
+pio --version
+pio system info
+pio run -v
+```
+
+### Links
+- [PlatformIO Docs](https://docs.platformio.org/)
+- [PlatformIO Troubleshooting](https://docs.platformio.org/page/faq/index.html)
+- [Microsoft: Connect USB devices in WSL](https://learn.microsoft.com/en-us/windows/wsl/connect-usb)
+
+### Project-specific runtime issues
+
 | Symptom | Likely cause | What to try |
 | --- | --- | --- |
 | `pio run` fails inside WSL | PlatformIO not installed in WSL or package cache issue | Reinstall `PlatformIO Core` in WSL and rerun `pio run` from the repo root |
 | Board uploads fail from WSL | USB passthrough instability | Build in WSL, then upload from Windows PlatformIO against the `COM` port |
-| Dashboard shows no serial ports | Data-only USB cable missing, board busy, or pySerial enumeration failed | Refresh ports, reconnect USB, close other serial monitors, or set `OINKSPY_SERIAL_PORTS=/dev/ttyUSB0,/dev/ttyACM0` |
+| Dashboard shows no serial ports | Data-only USB cable missing, board busy, or pySerial enumeration failed | Refresh ports, reconnect USB, close other serial monitors, or set `OINKSPY_SERIAL_PORTS=COM3` on Windows or `OINKSPY_SERIAL_PORTS=/dev/ttyUSB0,/dev/ttyACM0` on WSL/Linux |
 | Phone GPS badge stays on `HTTP` | Browser blocks geolocation on insecure origins | On Android Chrome, add `http://192.168.4.1` to `chrome://flags` insecure origins; iOS Safari will not allow GPS over HTTP |
 | Device portal shows `Storage: SD missing` | SD card absent or not mounted | Reseat the SD card, confirm the chip-select wiring on `D2`, and reboot |
 | KML export has no points | Detections were not GPS tagged | Connect browser GPS or Grove GNSS before scanning, then export again |
