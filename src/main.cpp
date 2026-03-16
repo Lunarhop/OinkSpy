@@ -4,6 +4,7 @@
 #include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
 #include <SPIFFS.h>
+#include <Update.h>
 #include <WiFi.h>
 #include <ctype.h>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include "oink_config.h"
 #include "oink_gnss.h"
 #include "oink_log.h"
+#include "oink_rtc.h"
 #include "oink_scan.h"
 #include "oink_settings.h"
 #include "oink_state.h"
@@ -25,6 +27,11 @@ AsyncWebServer gServer(80);
 DNSServer gDnsServer;
 bool gDnsServerStarted = false;
 constexpr uint16_t kCaptiveDnsPort = 53;
+bool gOtaInProgress = false;
+bool gOtaHasError = false;
+size_t gOtaBytesWritten = 0;
+unsigned long gPendingRestartAtMs = 0;
+char gOtaLastMessage[96] = "Idle";
 
 static const char FY_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
@@ -123,6 +130,7 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 <span id="sysClock">Time: checking</span>
 <span id="sysStore">Storage: checking</span>
 <span id="sysGnss">GNSS: checking</span>
+<span id="sysRtc">RTC: checking</span>
 </div>
 <div class="launch" id="launchGuide"><strong id="launchTitle">Open the full browser for GPS</strong><span id="launchText">If this page opened inside a Wi-Fi sign-in helper, location is more reliable after opening the dashboard in your phone browser.</span><div class="rw"><button class="btn" onclick="openFullBrowser()" style="background:#22c55e">OPEN IN BROWSER</button><button class="btn" onclick="dismissLaunchGuide(true)" style="background:#6366f1">CONTINUE HERE</button></div></div>
 </div>
@@ -140,6 +148,15 @@ h4{color:#fda4af;font-size:14px;margin-bottom:8px}
 <h4>PRIOR SESSION</h4>
 <button class="btn" onclick="location.href='/api/history/json'" style="background:#6366f1">DOWNLOAD PREV JSON</button>
 <button class="btn" onclick="location.href='/api/history/kml'" style="background:#22c55e">DOWNLOAD PREV KML</button>
+<hr class="sep">
+<h4>FIRMWARE UPDATE</h4>
+<p style="font-size:10px;color:#f9a8d4;margin-bottom:8px">Upload a `.bin` built for the XIAO ESP32-S3. The device reboots after a successful flash.</p>
+<div class="dbg">
+<div class="dbh">Use the PlatformIO `firmware.bin` artifact and keep power stable until the update completes.</div>
+<input id="otaFile" type="file" accept=".bin,application/octet-stream" style="width:100%;padding:8px;background:rgba(31,15,21,.85);color:#fff1f5;border:1px solid rgba(251,113,133,.24);border-radius:6px">
+<div class="dbh" id="otaStatus" style="margin-top:8px">OTA: checking</div>
+</div>
+<button class="btn" onclick="uploadOta()" style="background:#f97316">UPLOAD OTA BIN</button>
 <hr class="sep">
 <h4>RECENT EVENTS</h4>
 <p style="font-size:10px;color:#f9a8d4;margin-bottom:8px">Latest bookmarks and detections recorded by the device</p>
@@ -173,7 +190,9 @@ function patternPayload(reset){if(reset){return {reset_defaults:true};} let payl
 function loadPat(){fetch('/api/patterns').then(r=>r.json()).then(p=>{renderPatternEditor(p);window._pL=1;}).catch(()=>{document.getElementById('pC').innerHTML='<div class="empty">Detection database unavailable</div>';});}
 function savePat(reset){fetch('/api/patterns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(patternPayload(reset))}).then(r=>r.json()).then(p=>{if(p.status&&p.status!=='success'){throw new Error(p.message||'save failed');} loadPat(); alert(reset?'Detection parameters reset to defaults.':'Detection parameters saved.');}).catch(err=>{alert('Detection parameter update failed: '+err.message);});}
 function loadEvents(){fetch('/api/events').then(r=>r.json()).then(d=>{E=d;let el=document.getElementById('eL');if(!E.length){el.innerHTML='<div class="empty">No recent events yet</div>';return;} el.innerHTML=E.map(eventCard).join('');}).catch(()=>{document.getElementById('eL').innerHTML='<div class="empty">Recent events unavailable</div>';});}
-function loadPortalMeta(){fetch('/api/time').then(r=>r.json()).then(t=>{setTxt('sysClock',t.synced?'Time: '+t.time_source+' '+t.iso8601:'Time: waiting for sync',t.synced?'#22c55e':'#facc15');}).catch(()=>{setTxt('sysClock','Time: unavailable','#ef4444');});fetch('/api/storage').then(r=>r.json()).then(s=>{let txt=s.sd_ready?'Storage: SD ready':'Storage: SD missing';if(s.log_events_dropped>0)txt+=' drops:'+s.log_events_dropped;setTxt('sysStore',txt,s.sd_ready&&s.sd_logging_enabled?'#22c55e':'#f59e0b');}).catch(()=>{setTxt('sysStore','Storage: unavailable','#ef4444');});fetch('/api/gnss').then(r=>r.json()).then(g=>{let txt=!g.enabled?'GNSS: off':g.has_fix?'GNSS: fix '+g.satellites+' sats':g.gps_seen?'GNSS: seen, no fix yet':'GNSS: waiting on D6/D7';setTxt('sysGnss',txt,g.has_fix?'#22c55e':g.gps_seen?'#facc15':'#f9a8d4');}).catch(()=>{setTxt('sysGnss','GNSS: unavailable','#ef4444');});}
+function loadOtaStatus(){fetch('/api/ota/status').then(r=>r.json()).then(s=>{let txt=!s.enabled?'OTA: disabled in config':s.in_progress?'OTA: writing '+s.bytes_written+' bytes':s.pending_reboot?'OTA: update applied, reboot pending':'OTA: '+(s.message||'idle');setTxt('otaStatus',txt,s.error?'#ef4444':s.pending_reboot?'#22c55e':'#f9a8d4');}).catch(()=>{setTxt('otaStatus','OTA: unavailable','#ef4444');});}
+function uploadOta(){let fileInput=document.getElementById('otaFile');if(!fileInput||!fileInput.files||!fileInput.files.length){alert('Choose a firmware .bin file first.');return;} let fd=new FormData();fd.append('firmware',fileInput.files[0]);setTxt('otaStatus','OTA: uploading...','#facc15');fetch('/api/ota',{method:'POST',body:fd}).then(async r=>{let data=await r.json().catch(()=>({}));if(!r.ok||data.status!=='success'){throw new Error(data.message||'OTA upload failed');} setTxt('otaStatus','OTA: '+(data.message||'success'),'#22c55e'); alert(data.message||'Firmware updated. The device will reboot shortly.');}).catch(err=>{setTxt('otaStatus','OTA: '+err.message,'#ef4444'); alert('OTA upload failed: '+err.message);}).finally(()=>loadOtaStatus());}
+function loadPortalMeta(){fetch('/api/time').then(r=>r.json()).then(t=>{setTxt('sysClock',t.synced?'Time: '+t.time_source+' '+t.iso8601:'Time: waiting for sync',t.synced?'#22c55e':'#facc15');}).catch(()=>{setTxt('sysClock','Time: unavailable','#ef4444');});fetch('/api/storage').then(r=>r.json()).then(s=>{let txt=s.sd_ready?'Storage: SD ready':'Storage: SD missing';if(s.log_events_dropped>0)txt+=' drops:'+s.log_events_dropped;setTxt('sysStore',txt,s.sd_ready&&s.sd_logging_enabled?'#22c55e':'#f59e0b');}).catch(()=>{setTxt('sysStore','Storage: unavailable','#ef4444');});fetch('/api/gnss').then(r=>r.json()).then(g=>{let txt=!g.enabled?'GNSS: off':g.has_fix?'GNSS: fix '+g.satellites+' sats':g.gps_seen?'GNSS: seen, no fix yet':'GNSS: waiting on D6/D7';setTxt('sysGnss',txt,g.has_fix?'#22c55e':g.gps_seen?'#facc15':'#f9a8d4');}).catch(()=>{setTxt('sysGnss','GNSS: unavailable','#ef4444');});fetch('/api/rtc').then(r=>r.json()).then(rt=>{let txt=!rt.enabled?'RTC: off':!rt.present?'RTC: not found':rt.time_valid?'RTC: '+rt.iso8601:'RTC: found, time unset';setTxt('sysRtc',txt,rt.time_valid?'#22c55e':rt.present?'#facc15':'#f9a8d4');}).catch(()=>{setTxt('sysRtc','RTC: unavailable','#ef4444');});loadOtaStatus();}
 let _gW=null,_gOk=false,_gTried=false,_gPerm='unknown',_gPermStatus=null;
 function setGPSBadge(text,color,title){let g=document.getElementById('sG');g.textContent=text;g.style.color=color||'#fda4af';g.title=title||'';}
 function stopGPS(){if(_gW!==null&&navigator.geolocation){navigator.geolocation.clearWatch(_gW);} _gW=null;}
@@ -218,6 +237,25 @@ void sendPortalRedirect(AsyncWebServerRequest* request) {
 void handlePortalProbe(AsyncWebServerRequest* request) {
     printf("[OINK-YOU] Captive portal probe: %s\n", request->url().c_str());
     sendPortalRedirect(request);
+}
+
+void setOtaMessage(const char* message) {
+    strlcpy(gOtaLastMessage, message ? message : "Idle", sizeof(gOtaLastMessage));
+}
+
+void setOtaError(const char* message) {
+    gOtaHasError = true;
+    setOtaMessage(message && message[0] ? message : "Update failed");
+}
+
+void writeOtaStatusJson(Print& out) {
+    out.printf("{\"enabled\":%s,\"in_progress\":%s,\"error\":%s,\"bytes_written\":%u,\"pending_reboot\":%s,\"message\":\"%s\"}",
+               gApp.runtimeConfig.otaEnabled ? "true" : "false",
+               gOtaInProgress ? "true" : "false",
+               gOtaHasError ? "true" : "false",
+               static_cast<unsigned>(gOtaBytesWritten),
+               gPendingRestartAtMs != 0 ? "true" : "false",
+               gOtaLastMessage);
 }
 
 void beginCaptivePortalDns() {
@@ -326,10 +364,10 @@ void setupServer() {
     });
 
     gServer.on("/api/storage", HTTP_GET, [](AsyncWebServerRequest* request) {
-        char buf[640];
+        char buf[768];
         snprintf(buf,
                  sizeof(buf),
-                 "{\"spiffs_ready\":%s,\"sd_ready\":%s,\"sd_logging_enabled\":%s,\"log_worker_ready\":%s,\"log_queue_depth\":%u,\"log_events_written\":%lu,\"log_events_dropped\":%lu,\"session_csv\":\"%s\",\"session_jsonl\":\"%s\",\"daily_csv\":\"%s\",\"daily_jsonl\":\"%s\"}",
+                 "{\"spiffs_ready\":%s,\"sd_ready\":%s,\"sd_logging_enabled\":%s,\"log_worker_ready\":%s,\"log_queue_depth\":%u,\"log_events_written\":%lu,\"log_events_dropped\":%lu,\"ota_enabled\":%s,\"session_csv\":\"%s\",\"session_jsonl\":\"%s\",\"daily_csv\":\"%s\",\"daily_jsonl\":\"%s\"}",
                  gApp.spiffsReady ? "true" : "false",
                  gApp.sdReady ? "true" : "false",
                  gApp.runtimeConfig.sdLoggingEnabled ? "true" : "false",
@@ -337,6 +375,7 @@ void setupServer() {
                  static_cast<unsigned>(oink::log::queuedEventCount()),
                  oink::log::writtenEventCount(),
                  oink::log::droppedEventCount(),
+                 gApp.runtimeConfig.otaEnabled ? "true" : "false",
                  oink::log::sessionCsvPath(),
                  oink::log::sessionJsonlPath(),
                  oink::log::dailyCsvPath(),
@@ -381,6 +420,11 @@ void setupServer() {
         oink::gnss::writeStatusJson(*resp);
         request->send(resp);
     });
+    gServer.on("/api/rtc", HTTP_GET, [](AsyncWebServerRequest* request) {
+        AsyncResponseStream* resp = request->beginResponseStream("application/json");
+        oink::rtc::writeStatusJson(*resp);
+        request->send(resp);
+    });
 
     gServer.on("/api/patterns", HTTP_GET, [](AsyncWebServerRequest* request) {
         AsyncResponseStream* resp = request->beginResponseStream("application/json");
@@ -412,6 +456,78 @@ void setupServer() {
                        return;
                    }
                    request->send(200, "application/json", "{\"status\":\"success\"}");
+               });
+    gServer.on("/api/ota/status", HTTP_GET, [](AsyncWebServerRequest* request) {
+        AsyncResponseStream* resp = request->beginResponseStream("application/json");
+        writeOtaStatusJson(*resp);
+        request->send(resp);
+    });
+    gServer.on("/api/ota",
+               HTTP_POST,
+               [](AsyncWebServerRequest* request) {
+                   if (!gApp.runtimeConfig.otaEnabled) {
+                       request->send(403, "application/json", "{\"status\":\"error\",\"message\":\"OTA is disabled in config.\"}");
+                       return;
+                   }
+                   if (gOtaHasError) {
+                       String payload = String("{\"status\":\"error\",\"message\":\"") + gOtaLastMessage + "\"}";
+                       request->send(500, "application/json", payload);
+                       return;
+                   }
+
+                   setOtaMessage("Update applied. Rebooting shortly.");
+                   gPendingRestartAtMs = millis() + 1500;
+                   String payload = String("{\"status\":\"success\",\"message\":\"") + gOtaLastMessage + "\"}";
+                   request->send(200, "application/json", payload);
+               },
+               [](AsyncWebServerRequest*, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
+                   if (!gApp.runtimeConfig.otaEnabled) {
+                       return;
+                   }
+
+                   if (index == 0) {
+                       gOtaInProgress = true;
+                       gOtaHasError = false;
+                       gOtaBytesWritten = 0;
+                       gPendingRestartAtMs = 0;
+                       setOtaMessage("Starting OTA update");
+                       printf("[OINK-YOU] OTA upload started: %s\n", filename.c_str());
+                       if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+                           char message[64];
+                           snprintf(message, sizeof(message), "Update begin failed (%u)", Update.getError());
+                           setOtaError(message);
+                           Update.abort();
+                           return;
+                       }
+                   }
+
+                   if (!gOtaHasError) {
+                       size_t written = Update.write(data, len);
+                       if (written != len) {
+                           char message[64];
+                           snprintf(message, sizeof(message), "Update write failed (%u)", Update.getError());
+                           setOtaError(message);
+                           Update.abort();
+                           return;
+                       }
+                       gOtaBytesWritten += written;
+                   }
+
+                   if (final) {
+                       gOtaInProgress = false;
+                       if (!gOtaHasError) {
+                           if (Update.end(true)) {
+                               setOtaMessage("Update applied. Rebooting shortly.");
+                               printf("[OINK-YOU] OTA upload complete: %u bytes\n", static_cast<unsigned>(gOtaBytesWritten));
+                           } else {
+                               char message[64];
+                               snprintf(message, sizeof(message), "Update finalize failed (%u)", Update.getError());
+                               setOtaError(message);
+                           }
+                       } else {
+                           printf("[OINK-YOU] OTA upload failed: %s\n", gOtaLastMessage);
+                       }
+                   }
                });
 
     gServer.on("/api/export/json", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -661,6 +777,10 @@ void setup() {
     printf("[OINK-YOU] SD logging: %s\n", gApp.sdReady && gApp.runtimeConfig.sdLoggingEnabled ? "ENABLED" : "DISABLED");
     printf("[OINK-YOU] Log worker: %s\n", gApp.logWorkerReady ? "READY" : "DISABLED");
     printf("[OINK-YOU] Time source: %s (%s)\n", oink::timeutil::timeSourceLabel(), gApp.dayToken);
+    oink::rtc::Status rtcStatus = oink::rtc::getStatus();
+    printf("[OINK-YOU] RTC: %s\n",
+           !rtcStatus.enabled ? "DISABLED" : !rtcStatus.present ? "NOT FOUND" : rtcStatus.timeValid ? rtcStatus.iso8601 : "PRESENT, TIME INVALID");
+    printf("[OINK-YOU] OTA: %s\n", gApp.runtimeConfig.otaEnabled ? "ENABLED (/api/ota)" : "DISABLED");
     oink::gnss::printStatus(Serial);
     if (gApp.sdReady && gApp.runtimeConfig.sdLoggingEnabled) {
         printf("[OINK-YOU] SD session CSV: %s\n", oink::log::sessionCsvPath());
@@ -687,6 +807,13 @@ void loop() {
     if (gApp.companionChangePending) {
         gApp.companionChangePending = false;
         oink::scan::onCompanionChange();
+    }
+
+    if (gPendingRestartAtMs != 0 && millis() >= gPendingRestartAtMs) {
+        printf("[OINK-YOU] Restarting after OTA\n");
+        oink::log::saveSession();
+        delay(100);
+        ESP.restart();
     }
 
     oink::scan::pollScan();

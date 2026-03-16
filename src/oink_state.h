@@ -88,6 +88,7 @@ struct AppState {
 
     bool timeSynced;
     bool manualTimeSet;
+    char timeSource[24];
     time_t lastEpoch;
     unsigned long lastTimeSyncAttempt;
     unsigned long lastTimeSyncMillis;

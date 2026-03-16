@@ -12,6 +12,8 @@ struct RuntimeConfig {
     char ntpServer2[64];
     bool buzzerEnabled;
     bool ntpEnabled;
+    bool rtcEnabled;
+    bool otaEnabled;
     unsigned long bleScanIntervalMs;
     int standaloneBleScanDurationSec;
     int companionBleScanDurationSec;

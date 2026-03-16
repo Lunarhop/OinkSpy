@@ -25,6 +25,8 @@ void loadDefaults() {
     strlcpy(oink::gApp.runtimeConfig.ntpServer2, "time.nist.gov", sizeof(oink::gApp.runtimeConfig.ntpServer2));
     oink::gApp.runtimeConfig.buzzerEnabled = true;
     oink::gApp.runtimeConfig.ntpEnabled = true;
+    oink::gApp.runtimeConfig.rtcEnabled = true;
+    oink::gApp.runtimeConfig.otaEnabled = true;
     oink::gApp.runtimeConfig.bleScanIntervalMs = oink::config::kBleScanIntervalMs;
     oink::gApp.runtimeConfig.standaloneBleScanDurationSec = oink::config::kStandaloneBleScanDurationSec;
     oink::gApp.runtimeConfig.companionBleScanDurationSec = oink::config::kCompanionBleScanDurationSec;
@@ -70,6 +72,8 @@ void mergeConfigJson(const String& jsonText) {
             sizeof(oink::gApp.runtimeConfig.ntpServer2));
     oink::gApp.runtimeConfig.buzzerEnabled = root["buzzer_enabled"] | oink::gApp.runtimeConfig.buzzerEnabled;
     oink::gApp.runtimeConfig.ntpEnabled = root["ntp_enabled"] | oink::gApp.runtimeConfig.ntpEnabled;
+    oink::gApp.runtimeConfig.rtcEnabled = root["rtc_enabled"] | oink::gApp.runtimeConfig.rtcEnabled;
+    oink::gApp.runtimeConfig.otaEnabled = root["ota_enabled"] | oink::gApp.runtimeConfig.otaEnabled;
     oink::gApp.runtimeConfig.bleScanIntervalMs = root["ble_scan_interval_ms"] | oink::gApp.runtimeConfig.bleScanIntervalMs;
     oink::gApp.runtimeConfig.standaloneBleScanDurationSec = root["standalone_scan_duration_sec"] | oink::gApp.runtimeConfig.standaloneBleScanDurationSec;
     oink::gApp.runtimeConfig.companionBleScanDurationSec = root["companion_scan_duration_sec"] | oink::gApp.runtimeConfig.companionBleScanDurationSec;

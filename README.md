@@ -8,8 +8,8 @@ OinkSpy is a customized `flock-you` fork adapted for the `Seeed Studio XIAO ESP3
 ## Current Status
 - Platform: `PlatformIO + Arduino`
 - Target board: `seeed_xiao_esp32s3`
-- Current firmware shape: single-file prototype in `src/main.cpp`
-- Confirmed features: BLE detection, Raven UUID heuristics, OLED status, buzzer alerts, Wi-Fi AP dashboard, phone GPS tagging, fixed-port Grove GNSS, CSV/JSON/KML export, SPIFFS session persistence
+- Current firmware shape: modular firmware split across `src/main.cpp`, board, scan, logging, GNSS, RTC, settings, and time helpers
+- Confirmed features: BLE detection, Raven UUID heuristics, OLED status, buzzer alerts, Wi-Fi AP dashboard, phone GPS tagging, fixed-port Grove GNSS, CSV/JSON/KML export, SPIFFS session persistence, SD card logging, browser-based OTA firmware upload, optional PCF8563 RTC support
 
 ## Quick Start (Windows)
 The recommended path for OinkSpy is `Windows 10/11 + VS Code + PlatformIO IDE`. It keeps build, upload, and serial monitoring in one place and is usually the simplest option when the XIAO board appears in Device Manager as a Windows `COM` port.
@@ -197,9 +197,8 @@ Current embedded dependencies in `platformio.ini`:
 
 Planned additions for the plug-and-play build:
 
-- `SdFat` for MicroSD logging
-- `Update.h` / Arduino OTA for firmware updates
-- a small RTC wrapper for optional `PCF8563` support
+- hardware-in-loop validation of OTA uploads on a real XIAO ESP32-S3
+- hardware-in-loop validation of `PCF8563` RTC detection and battery-backed time restore
 
 ## GPS Wardriving
 OinkSpy now supports both browser GPS tagging and the Seeed Studio Grove - GPS (L76K) GNSS module over UART at `9600 8N1`.
@@ -343,6 +342,22 @@ A starter template is included at `config.oinkspy.example.json`.
 | `sd_json_enabled` | `true` | Write JSONL log files |
 | `sd_csv_enabled` | `true` | Write CSV log files |
 | `gnss_enabled` | `true` when compiled in | Enables Grove GNSS reader |
+| `rtc_enabled` | `true` | Probes and uses an optional `PCF8563` on I2C |
+| `ota_enabled` | `true` | Enables firmware upload at `/api/ota` from the captive portal |
+
+## OTA And RTC
+The device portal now includes a firmware upload tool in the `TOOLS` tab. Upload the PlatformIO-generated `firmware.bin` for the `seeed_xiao_esp32s3` target and the device will reboot automatically after a successful flash.
+
+Optional `PCF8563` RTC support now shares the same I2C bus as the OLED on `D4` and `D5` at address `0x51`. When present, OinkSpy can:
+
+- restore wall-clock time from RTC on boot when NTP is unavailable
+- keep the RTC updated from browser-set or NTP-synced system time
+- report RTC presence and validity through the portal status API
+
+Hardware validation still needs a real device:
+
+- confirm an OTA upload from the captive portal completes and reboots cleanly
+- confirm RTC time survives power loss with a backup cell installed
 
 ## Troubleshooting
 
@@ -382,4 +397,3 @@ pio run -v
 | Phone GPS badge stays on `HTTP` | Browser blocks geolocation on insecure origins | On Android Chrome, add `http://192.168.4.1` to `chrome://flags` insecure origins; iOS Safari will not allow GPS over HTTP |
 | Device portal shows `Storage: SD missing` | SD card absent or not mounted | Reseat the SD card, confirm the chip-select wiring on `D2`, and reboot |
 | KML export has no points | Detections were not GPS tagged | Connect browser GPS or Grove GNSS before scanning, then export again |
-

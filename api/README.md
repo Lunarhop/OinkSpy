@@ -68,6 +68,8 @@ A Flask-based web dashboard for real-time monitoring and analysis of Flock Safet
 ### Detection Management
 - `GET /api/detections` - Get all detections (with optional filtering)
 - `POST /api/detections` - Add new detection from Flock You device
+- `GET /api/help` - Get setup help and troubleshooting hints
+- `GET /api/status` - Get connection summary and recommended next step
 - `POST /api/clear` - Clear all detections
 
 ### GPS Management
@@ -106,11 +108,12 @@ The dashboard supports standard NMEA GPS dongles that output GPGGA sentences. Co
 
 ## File Structure
 ```
-webapp/
-├── app.py              # Main Flask application
+api/
+├── flockyou.py         # Main Flask application
 ├── requirements.txt    # Python dependencies
 ├── templates/
 │   └── index.html     # Web dashboard template
+├── data/              # Saved settings and cumulative detections
 ├── exports/           # Generated export files
 └── README.md         # This file
 ```

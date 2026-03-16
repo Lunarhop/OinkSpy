@@ -11,6 +11,7 @@ bool isSynced();
 bool setFromEpoch(time_t epoch, const char* source);
 time_t currentEpoch();
 const char* timeSourceLabel();
+bool sourceIs(const char* label);
 void formatIso8601(char* buffer, size_t size);
 void currentDayToken(char* buffer, size_t size);
 
