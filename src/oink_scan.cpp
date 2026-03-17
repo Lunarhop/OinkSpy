@@ -149,8 +149,19 @@ void appendWardriveWifiResults(int16_t resultCount) {
         detection.gpsLon = hasGps ? oink::gApp.gpsLon : 0.0;
         detection.gpsAcc = hasGps ? oink::gApp.gpsAcc : 0.0f;
 
-        oink::log::noteWardriveScanCandidate(detection.method, detection.rssi, detection.count, hasGps, timeSynced);
-        oink::log::appendWardriveDetection(detection);
+        int idx = oink::scan::addLiveDetection(detection, false);
+        oink::Detection wardriveDetection = detection;
+        if (idx >= 0 && oink::gApp.mutex && xSemaphoreTake(oink::gApp.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            wardriveDetection = oink::gApp.detections[idx];
+            xSemaphoreGive(oink::gApp.mutex);
+        }
+
+        oink::log::noteWardriveScanCandidate(wardriveDetection.method,
+                                             wardriveDetection.rssi,
+                                             wardriveDetection.count,
+                                             wardriveDetection.hasGPS,
+                                             timeSynced);
+        oink::log::appendWardriveDetection(wardriveDetection);
     }
 }
 
@@ -555,26 +566,47 @@ void attachGps(oink::Detection& detection) {
     detection.gpsAcc = oink::gApp.gpsAcc;
 }
 
-int addDetection(const char* mac, const char* name, int rssi, const char* method, bool isRaven, const char* ravenFW) {
+void applyDetectionUpdate(oink::Detection& target, const oink::Detection& source) {
+    target.lastSeen = millis();
+    target.rssi = source.rssi;
+    if (source.name[0]) {
+        strlcpy(target.name, source.name, sizeof(target.name));
+    }
+    if (source.method[0]) {
+        strlcpy(target.method, source.method, sizeof(target.method));
+    }
+    target.isRaven = source.isRaven;
+    if (source.ravenFW[0]) {
+        strlcpy(target.ravenFW, source.ravenFW, sizeof(target.ravenFW));
+    }
+    if (source.hasGPS) {
+        target.hasGPS = true;
+        target.gpsLat = source.gpsLat;
+        target.gpsLon = source.gpsLon;
+        target.gpsAcc = source.gpsAcc;
+    } else {
+        attachGps(target);
+    }
+}
+
+void addDetectionNotification(const char* method, int rssi) {
+    char notification[32];
+    snprintf(notification, sizeof(notification), "%s %ddBm", method, rssi);
+    oink::board::addNotification(notification);
+}
+
+int addDetection(const oink::Detection& incoming, bool notifyUser) {
     if (!oink::gApp.mutex || xSemaphoreTake(oink::gApp.mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         return -1;
     }
 
     for (int i = 0; i < oink::gApp.detectionCount; ++i) {
-        if (strcasecmp(oink::gApp.detections[i].mac, mac) == 0) {
+        if (strcasecmp(oink::gApp.detections[i].mac, incoming.mac) == 0) {
             oink::gApp.detections[i].count++;
-            oink::gApp.detections[i].lastSeen = millis();
-            oink::gApp.detections[i].rssi = rssi;
-            if (name && name[0]) {
-                strncpy(oink::gApp.detections[i].name, name, sizeof(oink::gApp.detections[i].name) - 1);
-                oink::gApp.detections[i].name[sizeof(oink::gApp.detections[i].name) - 1] = '\0';
+            applyDetectionUpdate(oink::gApp.detections[i], incoming);
+            if (notifyUser) {
+                addDetectionNotification(incoming.method, incoming.rssi);
             }
-            attachGps(oink::gApp.detections[i]);
-
-            char notification[32];
-            snprintf(notification, sizeof(notification), "%s %ddBm", method, rssi);
-            oink::board::addNotification(notification);
-
             xSemaphoreGive(oink::gApp.mutex);
             return i;
         }
@@ -587,27 +619,30 @@ int addDetection(const char* mac, const char* name, int rssi, const char* method
 
     oink::Detection& detection = oink::gApp.detections[oink::gApp.detectionCount];
     memset(&detection, 0, sizeof(detection));
-    strncpy(detection.mac, mac, sizeof(detection.mac) - 1);
-    detection.mac[sizeof(detection.mac) - 1] = '\0';
-    if (name) {
-        for (int i = 0; i < static_cast<int>(sizeof(detection.name) - 1) && name[i]; ++i) {
-            detection.name[i] = (name[i] == '"' || name[i] == '\\') ? '_' : name[i];
+    strlcpy(detection.mac, incoming.mac, sizeof(detection.mac));
+    if (incoming.name[0]) {
+        for (int i = 0; i < static_cast<int>(sizeof(detection.name) - 1) && incoming.name[i]; ++i) {
+            detection.name[i] = (incoming.name[i] == '"' || incoming.name[i] == '\\') ? '_' : incoming.name[i];
         }
     }
-    detection.rssi = rssi;
-    strncpy(detection.method, method, sizeof(detection.method) - 1);
-    detection.method[sizeof(detection.method) - 1] = '\0';
+    detection.rssi = incoming.rssi;
+    strlcpy(detection.method, incoming.method, sizeof(detection.method));
     detection.firstSeen = millis();
     detection.lastSeen = detection.firstSeen;
     detection.count = 1;
-    detection.isRaven = isRaven;
-    strncpy(detection.ravenFW, ravenFW ? ravenFW : "", sizeof(detection.ravenFW) - 1);
-    detection.ravenFW[sizeof(detection.ravenFW) - 1] = '\0';
-    attachGps(detection);
-
-    char notification[32];
-    snprintf(notification, sizeof(notification), "%s %ddBm", method, rssi);
-    oink::board::addNotification(notification);
+    detection.isRaven = incoming.isRaven;
+    strlcpy(detection.ravenFW, incoming.ravenFW, sizeof(detection.ravenFW));
+    if (incoming.hasGPS) {
+        detection.hasGPS = true;
+        detection.gpsLat = incoming.gpsLat;
+        detection.gpsLon = incoming.gpsLon;
+        detection.gpsAcc = incoming.gpsAcc;
+    } else {
+        attachGps(detection);
+    }
+    if (notifyUser) {
+        addDetectionNotification(incoming.method, incoming.rssi);
+    }
 
     int idx = oink::gApp.detectionCount++;
     xSemaphoreGive(oink::gApp.mutex);
@@ -714,7 +749,16 @@ class BleCallbacks : public NimBLEAdvertisedDeviceCallbacks {
             return;
         }
 
-        int idx = addDetection(addrStr.c_str(), name.c_str(), rssi, method, isRaven, ravenFW);
+        oink::Detection incoming = {};
+        strlcpy(incoming.mac, addrStr.c_str(), sizeof(incoming.mac));
+        strlcpy(incoming.name, name.c_str(), sizeof(incoming.name));
+        incoming.rssi = rssi;
+        strlcpy(incoming.method, method, sizeof(incoming.method));
+        incoming.isRaven = isRaven;
+        strlcpy(incoming.ravenFW, isRaven ? ravenFW : "", sizeof(incoming.ravenFW));
+        attachGps(incoming);
+
+        int idx = addDetection(incoming, true);
         int count = 0;
         oink::Detection wardriveDetection = {};
         bool haveWardriveDetection = false;
@@ -1004,6 +1048,10 @@ int countGpsTaggedDetections() {
         xSemaphoreGive(gApp.mutex);
     }
     return tagged;
+}
+
+int addLiveDetection(const oink::Detection& detection, bool notifyUser) {
+    return addDetection(detection, notifyUser);
 }
 
 void resetDetections() {

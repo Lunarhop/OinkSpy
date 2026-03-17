@@ -7,6 +7,10 @@
 class NimBLEAdvertisedDevice;
 class Print;
 
+namespace oink {
+struct Detection;
+}
+
 namespace oink::scan {
 
 void loadProfile();
@@ -21,6 +25,7 @@ void updateGps(double lat, double lon, float acc);
 bool gpsIsFresh();
 int countRavenDetections();
 int countGpsTaggedDetections();
+int addLiveDetection(const oink::Detection& detection, bool notifyUser);
 void resetDetections();
 
 } // namespace oink::scan
