@@ -71,7 +71,7 @@ Useful checks:
 - `pio device monitor` should show boot logs at `115200`.
 - After boot, the device captive portal should be available at `http://192.168.4.1`.
 
-The optional Flask companion dashboard remains in `api/` and can consume live serial data or imported JSON, CSV, and KML exports.
+The optional Flask desktop dashboard remains in `api/` and can consume live serial data or imported JSON, CSV, and KML exports. The on-device Wi-Fi AP is for phone control, GPS assist, and status viewing; it is not a separate scan mode.
 
 ## Detection Coverage
 OinkSpy currently detects likely surveillance hardware using BLE heuristics:
@@ -270,7 +270,7 @@ Example serial output:
 GNSS: port=U1 rx=D6 tx=D7 baud=9600 GPS: seen Sats: 7 Fix: yes HDOP: 0.90 last_ms=412
 ```
 
-## Flask Companion Dashboard
+## Flask Desktop Dashboard
 A desktop analysis dashboard is available in `api/`.
 
 ```powershell
@@ -334,8 +334,8 @@ A starter template is included at `config.oinkspy.example.json`.
 | `ntp_server_2` | `time.nist.gov` | Secondary NTP server |
 | `buzzer_enabled` | `true` | Boot and alert audio feedback |
 | `ble_scan_interval_ms` | `3000` | Time between scans |
-| `standalone_scan_duration_sec` | `2` | Scan duration for AP-only mode |
-| `companion_scan_duration_sec` | `3` | Scan duration when paired with companion tooling |
+| `standalone_scan_duration_sec` | `2` | Scan duration while the local phone-control AP is the only active Wi-Fi role |
+| `companion_scan_duration_sec` | `3` | Scan duration when a remote host is attached and OinkSpy can favor flock-drive throughput |
 | `save_interval_ms` | `15000` | Session persistence cadence |
 | `serial_timeout_ms` | `5000` | Serial command timeout |
 | `sd_logging_enabled` | `true` | Master switch for SD logging |

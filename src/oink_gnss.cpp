@@ -109,7 +109,9 @@ bool fixFresh() {
 
 void updateIndicators() {
 #if OINK_GNSS_LED_PIN >= 0
-    digitalWrite(OINK_GNSS_LED_PIN, gSeen ? HIGH : LOW);
+    if (OINK_GNSS_LED_PIN != oink::config::kStatusLedPin) {
+        digitalWrite(OINK_GNSS_LED_PIN, gSeen ? HIGH : LOW);
+    }
 #endif
 }
 
@@ -183,8 +185,10 @@ bool begin() {
     }
 
 #if OINK_GNSS_LED_PIN >= 0
-    pinMode(OINK_GNSS_LED_PIN, OUTPUT);
-    digitalWrite(OINK_GNSS_LED_PIN, LOW);
+    if (OINK_GNSS_LED_PIN != oink::config::kStatusLedPin) {
+        pinMode(OINK_GNSS_LED_PIN, OUTPUT);
+        digitalWrite(OINK_GNSS_LED_PIN, LOW);
+    }
 #endif
 
 #if defined(ARDUINO_ARCH_RP2040)

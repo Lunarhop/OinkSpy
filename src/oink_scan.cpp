@@ -937,19 +937,22 @@ void onCompanionChange() {
             WiFi.mode(WIFI_AP_STA);
             delay(100);
             WiFi.softAP(gApp.runtimeConfig.apSsid, gApp.runtimeConfig.apPassword);
-            printf("[OINK-YOU] Companion mode: WiFi AP kept ON for passive wardrive scans, duration %ds\n",
+            printf("[OINK-YOU] Remote control link active: WiFi AP kept ON for wardrive + phone control, duration %ds\n",
                    gApp.bleScanDurationSec);
         } else {
             WiFi.softAPdisconnect(true);
             WiFi.mode(WIFI_OFF);
-            printf("[OINK-YOU] Companion mode: WiFi AP OFF, scan duration %ds\n", gApp.bleScanDurationSec);
+            printf("[OINK-YOU] Remote control link active: WiFi AP OFF to favor flock drive throughput, duration %ds\n",
+                   gApp.bleScanDurationSec);
         }
     } else {
         WiFi.mode(gApp.runtimeConfig.wardrive.enabled ? WIFI_AP_STA : WIFI_AP);
         delay(100);
         WiFi.softAP(gApp.runtimeConfig.apSsid, gApp.runtimeConfig.apPassword);
         gApp.bleScanDurationSec = gApp.runtimeConfig.standaloneBleScanDurationSec;
-        printf("[OINK-YOU] Standalone mode: WiFi AP ON (%s), scan duration %ds\n", gApp.runtimeConfig.apSsid, gApp.bleScanDurationSec);
+        printf("[OINK-YOU] Local control AP ON (%s), scan duration %ds\n",
+               gApp.runtimeConfig.apSsid,
+               gApp.bleScanDurationSec);
     }
 }
 

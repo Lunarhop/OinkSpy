@@ -88,10 +88,10 @@ constexpr uint8_t kPigPanelH = 34;
 
 enum class PigMood {
     Idle,
-    Tracking,
-    Alert,
+    Wardrive,
+    Error,
     Paused,
-    Companion,
+    Flock,
 };
 
 void serviceAudio();
@@ -289,19 +289,63 @@ void copyTrimmed(char* dest, size_t size, const char* src, size_t maxChars) {
 }
 
 PigMood currentPigMood() {
-    if (oink::gApp.alertFlashOn || oink::gApp.deviceInRange) {
-        return PigMood::Alert;
-    }
+    bool storageExpected = oink::gApp.runtimeConfig.sdLoggingEnabled || oink::gApp.runtimeConfig.wardrive.enabled;
+    bool storageProblem =
+        (storageExpected && !oink::gApp.sdReady) ||
+        (oink::gApp.sdReady && !oink::gApp.sdLoggingHealthy);
+
     if (!oink::scan::isScanningEnabled()) {
         return PigMood::Paused;
     }
-    if (oink::gApp.bleClientConnected || oink::gApp.serialHostConnected) {
-        return PigMood::Companion;
+    if (storageProblem) {
+        return PigMood::Error;
     }
-    if (oink::gApp.detectionCount > 0) {
-        return PigMood::Tracking;
+    if (oink::gApp.wardriveActive) {
+        return PigMood::Wardrive;
     }
-    return PigMood::Idle;
+    return PigMood::Flock;
+}
+
+const char* currentModeLabel(PigMood mood) {
+    switch (mood) {
+        case PigMood::Wardrive:
+            return "Wardrive";
+        case PigMood::Flock:
+            return "Flock drive";
+        case PigMood::Error:
+            return "Storage issue";
+        case PigMood::Paused:
+            return "Scan paused";
+        case PigMood::Idle:
+        default:
+            return "Flock drive";
+    }
+}
+
+void updateStatusLed(PigMood mood) {
+    bool ledOn = false;
+    unsigned long now = millis();
+    switch (mood) {
+        case PigMood::Wardrive:
+            ledOn = (now % 1200UL) < 700UL;
+            break;
+        case PigMood::Flock: {
+            unsigned long phase = now % 1200UL;
+            ledOn = phase < 120UL || (phase >= 220UL && phase < 340UL);
+            break;
+        }
+        case PigMood::Error:
+            ledOn = ((now / 180UL) % 2UL) == 0;
+            break;
+        case PigMood::Paused:
+            ledOn = false;
+            break;
+        case PigMood::Idle:
+        default:
+            ledOn = ((now / 900UL) % 2UL) == 0;
+            break;
+    }
+    digitalWrite(oink::config::kStatusLedPin, ledOn ? HIGH : LOW);
 }
 
 void drawPigBuddy(PigMood mood) {
@@ -327,10 +371,16 @@ void drawPigBuddy(PigMood mood) {
     if (blink) {
         gDisplay.drawHLine(x + 16, y + 15, 4);
         gDisplay.drawHLine(x + 24, y + 15, 4);
-    } else if (mood == PigMood::Companion) {
-        gDisplay.drawCircle(x + 17, y + 15, 1, U8G2_DRAW_ALL);
-        gDisplay.drawLine(x + 24, y + 13, x + 28, y + 17);
-        gDisplay.drawLine(x + 24, y + 17, x + 28, y + 13);
+    } else if (mood == PigMood::Error) {
+        gDisplay.drawLine(x + 15, y + 13, x + 19, y + 17);
+        gDisplay.drawLine(x + 15, y + 17, x + 19, y + 13);
+        gDisplay.drawLine(x + 23, y + 13, x + 27, y + 17);
+        gDisplay.drawLine(x + 23, y + 17, x + 27, y + 13);
+    } else if (mood == PigMood::Flock) {
+        gDisplay.drawDisc(x + 17, y + 15, 1, U8G2_DRAW_ALL);
+        gDisplay.drawDisc(x + 25, y + 15, 1, U8G2_DRAW_ALL);
+        gDisplay.drawLine(x + 15, y + 12, x + 19, y + 11);
+        gDisplay.drawLine(x + 23, y + 11, x + 27, y + 12);
     } else {
         gDisplay.drawDisc(x + 17, y + 15, 1, U8G2_DRAW_ALL);
         gDisplay.drawDisc(x + 25, y + 15, 1, U8G2_DRAW_ALL);
@@ -341,13 +391,6 @@ void drawPigBuddy(PigMood mood) {
     gDisplay.drawDisc(x + 23, y + 23, 1, U8G2_DRAW_ALL);
 
     switch (mood) {
-        case PigMood::Alert:
-            gDisplay.drawCircle(x + 21, y + 29, 3, U8G2_DRAW_LOWER_LEFT | U8G2_DRAW_LOWER_RIGHT);
-            gDisplay.drawLine(x + 7, y + 13, x + 4, y + 10);
-            gDisplay.drawLine(x + 35, y + 13, x + 38, y + 10);
-            gDisplay.drawLine(x + 40, y + 3, x + 40, y + 12);
-            gDisplay.drawDisc(x + 40, y + 15, 1, U8G2_DRAW_ALL);
-            break;
         case PigMood::Paused:
             gDisplay.drawLine(x + 17, y + 28, x + 20, y + 26);
             gDisplay.drawLine(x + 20, y + 26, x + 22, y + 26);
@@ -356,14 +399,28 @@ void drawPigBuddy(PigMood mood) {
             gDisplay.drawStr(x + 31, y + 9, "z");
             gDisplay.drawStr(x + 35, y + 5, "z");
             break;
-        case PigMood::Companion:
+        case PigMood::Flock:
             gDisplay.drawLine(x + 18, y + 28, x + 21, y + 30);
             gDisplay.drawLine(x + 21, y + 30, x + 24, y + 28);
             gDisplay.drawLine(x + 26, y + 26, x + 29, y + 23);
+            gDisplay.drawLine(x + 34, y + 6, x + 39, y + 2);
+            gDisplay.drawLine(x + 34, y + 10, x + 40, y + 10);
             break;
-        case PigMood::Tracking:
+        case PigMood::Wardrive:
             gDisplay.drawLine(x + 18, y + 28, x + 21, y + 26);
             gDisplay.drawLine(x + 21, y + 26, x + 24, y + 28);
+            gDisplay.drawLine(x + 29, y + 21, x + 33, y + 19);
+            gDisplay.drawLine(x + 31, y + 24, x + 36, y + 22);
+            gDisplay.drawPixel(x + 38, y + 21);
+            break;
+        case PigMood::Error:
+            gDisplay.drawLine(x + 17, y + 29, x + 19, y + 27);
+            gDisplay.drawLine(x + 19, y + 27, x + 21, y + 26);
+            gDisplay.drawLine(x + 21, y + 26, x + 23, y + 27);
+            gDisplay.drawLine(x + 23, y + 27, x + 25, y + 29);
+            gDisplay.drawLine(x + 35, y + 8, x + 39, y + 4);
+            gDisplay.drawLine(x + 39, y + 4, x + 39, y + 11);
+            gDisplay.drawDisc(x + 39, y + 14, 1, U8G2_DRAW_ALL);
             break;
         case PigMood::Idle:
         default:
@@ -510,6 +567,7 @@ bool nextControlEvent(ControlEvent& event) {
 
 void serviceUi() {
     serviceAudio();
+    updateStatusLed(currentPigMood());
 
     if (!oink::gApp.oledReady) {
         return;
@@ -531,21 +589,14 @@ void serviceUi() {
     snprintf(countBuf, sizeof(countBuf), "%d", oink::gApp.detectionCount);
     gDisplay.drawStr(96, 12, countBuf);
 
-    const char* status = "Scanning...";
-    if (!oink::scan::isScanningEnabled()) {
-        status = "Scan paused";
-    } else if (oink::gApp.bleClientConnected || oink::gApp.serialHostConnected) {
-        status = "Companion";
-    } else if (oink::gApp.deviceInRange) {
-        status = "Device near";
-    }
-    gDisplay.drawStr(0, 28, status);
+    PigMood mood = currentPigMood();
+    gDisplay.drawStr(0, 28, currentModeLabel(mood));
 
     gDisplay.setFont(u8g2_font_5x7_tr);
     gDisplay.drawStr(0, 37, alertModeLabel());
 
     gDisplay.drawVLine(78, 28, 34);
-    drawPigBuddy(currentPigMood());
+    drawPigBuddy(mood);
 
     if (oink::gApp.alertFlashOn) {
         gDisplay.setFont(u8g2_font_9x15B_tr);
