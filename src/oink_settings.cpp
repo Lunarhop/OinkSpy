@@ -7,6 +7,7 @@
 
 #include "oink_config.h"
 #include "oink_log.h"
+#include "oink_scan.h"
 #include "oink_state.h"
 
 namespace {
@@ -24,6 +25,9 @@ constexpr uint16_t kWardriveRotationMax = 1024;
 constexpr uint16_t kWardriveDedupDefault = 300;
 constexpr uint16_t kWardriveDedupMin = 0;
 constexpr uint16_t kWardriveDedupMax = 3600;
+constexpr uint16_t kWardriveMoveThresholdDefault = 50;
+constexpr uint16_t kWardriveMoveThresholdMin = 0;
+constexpr uint16_t kWardriveMoveThresholdMax = 1000;
 
 uint16_t clampUint16(unsigned long value, uint16_t minValue, uint16_t maxValue, uint16_t defaultValue) {
     if (value < minValue || value > maxValue) {
@@ -37,6 +41,7 @@ void loadWardriveDefaults() {
     oink::gApp.runtimeConfig.wardrive.flushIntervalSeconds = kWardriveFlushIntervalDefault;
     oink::gApp.runtimeConfig.wardrive.fileRotationMb = kWardriveRotationDefault;
     oink::gApp.runtimeConfig.wardrive.dedupWindowSeconds = kWardriveDedupDefault;
+    oink::gApp.runtimeConfig.wardrive.moveThresholdMeters = kWardriveMoveThresholdDefault;
     strlcpy(oink::gApp.runtimeConfig.wardrive.logFormat, "csv", sizeof(oink::gApp.runtimeConfig.wardrive.logFormat));
 }
 
@@ -56,6 +61,11 @@ void clampWardriveConfig() {
         kWardriveDedupMin,
         kWardriveDedupMax,
         kWardriveDedupDefault);
+    oink::gApp.runtimeConfig.wardrive.moveThresholdMeters = clampUint16(
+        oink::gApp.runtimeConfig.wardrive.moveThresholdMeters,
+        kWardriveMoveThresholdMin,
+        kWardriveMoveThresholdMax,
+        kWardriveMoveThresholdDefault);
     if (strcasecmp(oink::gApp.runtimeConfig.wardrive.logFormat, "csv") != 0) {
         strlcpy(oink::gApp.runtimeConfig.wardrive.logFormat, "csv", sizeof(oink::gApp.runtimeConfig.wardrive.logFormat));
     }
@@ -74,6 +84,8 @@ void mergeWardriveConfig(JsonObject wardriveRoot) {
         wardriveRoot["file_rotation_mb"] | oink::gApp.runtimeConfig.wardrive.fileRotationMb;
     oink::gApp.runtimeConfig.wardrive.dedupWindowSeconds =
         wardriveRoot["dedup_window_seconds"] | oink::gApp.runtimeConfig.wardrive.dedupWindowSeconds;
+    oink::gApp.runtimeConfig.wardrive.moveThresholdMeters =
+        wardriveRoot["move_threshold_meters"] | oink::gApp.runtimeConfig.wardrive.moveThresholdMeters;
     strlcpy(oink::gApp.runtimeConfig.wardrive.logFormat,
             wardriveRoot["log_format"] | oink::gApp.runtimeConfig.wardrive.logFormat,
             sizeof(oink::gApp.runtimeConfig.wardrive.logFormat));
@@ -235,6 +247,7 @@ String serializeRuntimeConfigJson() {
     wardrive["flush_interval_seconds"] = gApp.runtimeConfig.wardrive.flushIntervalSeconds;
     wardrive["file_rotation_mb"] = gApp.runtimeConfig.wardrive.fileRotationMb;
     wardrive["dedup_window_seconds"] = gApp.runtimeConfig.wardrive.dedupWindowSeconds;
+    wardrive["move_threshold_meters"] = gApp.runtimeConfig.wardrive.moveThresholdMeters;
     wardrive["log_format"] = gApp.runtimeConfig.wardrive.logFormat;
 
     String json;
@@ -291,6 +304,8 @@ bool setWardriveEnabled(bool enabled, bool persist, String& error) {
         return false;
     }
 
+    oink::scan::onCompanionChange();
+
     if (gApp.runtimeConfig.wardrive.enabled) {
         oink::log::beginWardriveSession();
     } else {
@@ -304,11 +319,12 @@ bool setWardriveEnabled(bool enabled, bool persist, String& error) {
 }
 
 void writeWardriveConfigJson(Print& out) {
-    out.printf("{\"enabled\":%s,\"flush_interval_seconds\":%u,\"file_rotation_mb\":%u,\"dedup_window_seconds\":%u,\"log_format\":\"%s\"}",
+    out.printf("{\"enabled\":%s,\"flush_interval_seconds\":%u,\"file_rotation_mb\":%u,\"dedup_window_seconds\":%u,\"move_threshold_meters\":%u,\"log_format\":\"%s\"}",
                gApp.runtimeConfig.wardrive.enabled ? "true" : "false",
                static_cast<unsigned>(gApp.runtimeConfig.wardrive.flushIntervalSeconds),
                static_cast<unsigned>(gApp.runtimeConfig.wardrive.fileRotationMb),
                static_cast<unsigned>(gApp.runtimeConfig.wardrive.dedupWindowSeconds),
+               static_cast<unsigned>(gApp.runtimeConfig.wardrive.moveThresholdMeters),
                gApp.runtimeConfig.wardrive.logFormat);
 }
 
@@ -327,15 +343,20 @@ bool handleCommand(const char* line, Stream& out) {
     char* command = strtok(nullptr, " ");
     if (!command || strcasecmp(command, "status") == 0) {
         oink::log::WardriveStatus status = oink::log::wardriveStatus();
-        out.printf("Wardrive: enabled=%s active=%s flush=%us rotate=%uMB dedup=%us format=%s path=%s message=%s\n",
+        out.printf("Wardrive: enabled=%s active=%s flush=%us rotate=%uMB dedup=%us move=%um format=%s path=%s message=%s\n",
                    status.enabled ? "yes" : "no",
                    status.active ? "yes" : "no",
                    static_cast<unsigned>(status.flushIntervalSeconds),
                    static_cast<unsigned>(status.fileRotationMb),
                    static_cast<unsigned>(status.dedupWindowSeconds),
+                   static_cast<unsigned>(gApp.runtimeConfig.wardrive.moveThresholdMeters),
                    status.logFormat,
                    status.currentPath[0] ? status.currentPath : "-",
                    status.message);
+        return true;
+    }
+    if (strcasecmp(command, "debug") == 0) {
+        oink::log::printWardriveDebug(out);
         return true;
     }
 
@@ -347,7 +368,7 @@ bool handleCommand(const char* line, Stream& out) {
     } else if (strcasecmp(command, "toggle") == 0) {
         enable = !gApp.runtimeConfig.wardrive.enabled;
     } else {
-        out.println("Wardrive commands: wardrive status|on|off|toggle");
+        out.println("Wardrive commands: wardrive status|debug|on|off|toggle");
         return true;
     }
 

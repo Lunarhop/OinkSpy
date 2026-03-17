@@ -22,6 +22,7 @@
     "flush_interval_seconds": 60,
     "file_rotation_mb": 100,
     "dedup_window_seconds": 300,
+    "move_threshold_meters": 50,
     "log_format": "csv"
   }
 }

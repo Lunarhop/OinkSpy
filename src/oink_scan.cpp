@@ -15,10 +15,13 @@
 #include "oink_config.h"
 #include "oink_log.h"
 #include "oink_state.h"
+#include "oink_time.h"
 
 namespace {
 
 bool gScanningEnabled = true;
+bool gWardriveWifiScanPending = false;
+unsigned long gWardriveLastWifiScanMs = 0;
 constexpr const char* kPrefsNamespace = "oinkspy";
 constexpr const char* kPatternPrefsKey = "detect_db";
 constexpr size_t kMaxStringEntries = 64;
@@ -96,6 +99,152 @@ bool parseManufacturerId(const String& rawValue, uint16_t& outValue) {
     }
     outValue = static_cast<uint16_t>(parsed);
     return true;
+}
+
+const char* wifiModeLabel(wifi_mode_t mode) {
+    switch (mode) {
+        case WIFI_OFF:
+            return "off";
+        case WIFI_STA:
+            return "sta";
+        case WIFI_AP:
+            return "ap";
+        case WIFI_AP_STA:
+            return "ap_sta";
+        default:
+            return "unknown";
+    }
+}
+
+bool wifiModeHasSta(wifi_mode_t mode) {
+    return mode == WIFI_STA || mode == WIFI_AP_STA;
+}
+
+void appendWardriveWifiResults(int16_t resultCount) {
+    if (resultCount <= 0) {
+        return;
+    }
+
+    bool hasGps = oink::scan::gpsIsFresh();
+    bool timeSynced = oink::timeutil::isSynced();
+    for (int16_t i = 0; i < resultCount; ++i) {
+        oink::Detection detection = {};
+        String bssid = WiFi.BSSIDstr(i);
+        String ssid = WiFi.SSID(i);
+        if (!ssid.length()) {
+            ssid = "<hidden>";
+        }
+
+        strlcpy(detection.mac, bssid.c_str(), sizeof(detection.mac));
+        strlcpy(detection.name, ssid.c_str(), sizeof(detection.name));
+        strlcpy(detection.method, "wifi_ap", sizeof(detection.method));
+        detection.rssi = WiFi.RSSI(i);
+        detection.firstSeen = millis();
+        detection.lastSeen = detection.firstSeen;
+        detection.count = 1;
+        detection.isRaven = false;
+        detection.ravenFW[0] = '\0';
+        detection.hasGPS = hasGps;
+        detection.gpsLat = hasGps ? oink::gApp.gpsLat : 0.0;
+        detection.gpsLon = hasGps ? oink::gApp.gpsLon : 0.0;
+        detection.gpsAcc = hasGps ? oink::gApp.gpsAcc : 0.0f;
+
+        oink::log::noteWardriveScanCandidate(detection.method, detection.rssi, detection.count, hasGps, timeSynced);
+        oink::log::appendWardriveDetection(detection);
+    }
+}
+
+void pollWardriveWifiScan() {
+    if (!oink::gApp.runtimeConfig.wardrive.enabled || !gScanningEnabled) {
+        if (gWardriveWifiScanPending && WiFi.scanComplete() >= 0) {
+            WiFi.scanDelete();
+        }
+        gWardriveWifiScanPending = false;
+        return;
+    }
+
+    int16_t scanState = WiFi.scanComplete();
+    if (scanState == WIFI_SCAN_RUNNING) {
+        return;
+    }
+
+    wifi_mode_t wifiMode = WiFi.getMode();
+    const char* modeLabel = wifiModeLabel(wifiMode);
+    bool staEnabled = wifiModeHasSta(wifiMode);
+
+    if (gWardriveWifiScanPending && scanState >= 0) {
+        oink::log::noteWardriveWifiScanState("complete",
+                                             scanState > 0 ? "scan_complete" : "scan_empty",
+                                             scanState,
+                                             modeLabel,
+                                             staEnabled,
+                                             false);
+        appendWardriveWifiResults(scanState);
+        WiFi.scanDelete();
+        gWardriveWifiScanPending = false;
+        gWardriveLastWifiScanMs = millis();
+    } else if (gWardriveWifiScanPending && scanState == WIFI_SCAN_FAILED) {
+        oink::log::noteWardriveWifiScanState("error",
+                                             "scan_failed",
+                                             scanState,
+                                             modeLabel,
+                                             staEnabled,
+                                             false);
+        WiFi.scanDelete();
+        gWardriveWifiScanPending = false;
+        gWardriveLastWifiScanMs = millis();
+    }
+
+    if (gWardriveWifiScanPending) {
+        return;
+    }
+    if (millis() - gWardriveLastWifiScanMs < oink::config::kWardriveWifiScanIntervalMs) {
+        return;
+    }
+    if (wifiMode == WIFI_OFF) {
+        oink::log::noteWardriveWifiScanState("skip",
+                                             "wifi_off",
+                                             0,
+                                             modeLabel,
+                                             staEnabled,
+                                             false);
+        gWardriveLastWifiScanMs = millis();
+        return;
+    }
+
+    int16_t startState = WiFi.scanNetworks(true,
+                                           true,
+                                           true,
+                                           oink::config::kWardriveWifiMaxMsPerChannel);
+    if (startState == WIFI_SCAN_RUNNING) {
+        gWardriveWifiScanPending = true;
+        gWardriveLastWifiScanMs = millis();
+        oink::log::noteWardriveWifiScanState("start",
+                                             staEnabled ? "scan_started" : "scan_started_sta_autoon",
+                                             startState,
+                                             modeLabel,
+                                             staEnabled,
+                                             true);
+        oink::log::noteWardriveScanStart("wifi_cycle");
+    } else if (startState >= 0) {
+        oink::log::noteWardriveWifiScanState("complete",
+                                             startState > 0 ? "scan_complete_sync" : "scan_empty_sync",
+                                             startState,
+                                             modeLabel,
+                                             staEnabled,
+                                             false);
+        appendWardriveWifiResults(startState);
+        WiFi.scanDelete();
+        gWardriveLastWifiScanMs = millis();
+    } else {
+        oink::log::noteWardriveWifiScanState("error",
+                                             "start_failed",
+                                             startState,
+                                             modeLabel,
+                                             staEnabled,
+                                             false);
+        gWardriveLastWifiScanMs = millis();
+    }
 }
 
 void loadDefaultStringGroup(StringPatternGroup& group, const char* const* defaults, size_t count, String (*normalize)(const String&)) {
@@ -586,6 +735,7 @@ class BleCallbacks : public NimBLEAdvertisedDeviceCallbacks {
         double gpsLat = hasGps ? oink::gApp.gpsLat : 0.0;
         double gpsLon = hasGps ? oink::gApp.gpsLon : 0.0;
         float gpsAcc = hasGps ? oink::gApp.gpsAcc : 0.0f;
+        oink::log::noteWardriveScanCandidate(method, rssi, count, hasGps, oink::timeutil::isSynced());
         oink::log::appendDetectionEvent(addrStr.c_str(),
                                         name.c_str(),
                                         rssi,
@@ -719,6 +869,7 @@ void setupBle() {
     gApp.bleScan->setWindow(99);
     gApp.bleScan->start(gApp.bleScanDurationSec, false);
     gApp.lastBleScan = millis();
+    oink::log::noteWardriveScanStart("ble_cycle");
     printf("[OINK-YOU] BLE scanning ACTIVE\n");
 
     gApp.bleServer = NimBLEDevice::createServer();
@@ -737,12 +888,20 @@ void setupBle() {
 
 void onCompanionChange() {
     if (gApp.bleClientConnected || gApp.serialHostConnected) {
-        WiFi.softAPdisconnect(true);
-        WiFi.mode(WIFI_OFF);
         gApp.bleScanDurationSec = gApp.runtimeConfig.companionBleScanDurationSec;
-        printf("[OINK-YOU] Companion mode: WiFi AP OFF, scan duration %ds\n", gApp.bleScanDurationSec);
+        if (gApp.runtimeConfig.wardrive.enabled) {
+            WiFi.mode(WIFI_AP_STA);
+            delay(100);
+            WiFi.softAP(gApp.runtimeConfig.apSsid, gApp.runtimeConfig.apPassword);
+            printf("[OINK-YOU] Companion mode: WiFi AP kept ON for passive wardrive scans, duration %ds\n",
+                   gApp.bleScanDurationSec);
+        } else {
+            WiFi.softAPdisconnect(true);
+            WiFi.mode(WIFI_OFF);
+            printf("[OINK-YOU] Companion mode: WiFi AP OFF, scan duration %ds\n", gApp.bleScanDurationSec);
+        }
     } else {
-        WiFi.mode(WIFI_AP);
+        WiFi.mode(gApp.runtimeConfig.wardrive.enabled ? WIFI_AP_STA : WIFI_AP);
         delay(100);
         WiFi.softAP(gApp.runtimeConfig.apSsid, gApp.runtimeConfig.apPassword);
         gApp.bleScanDurationSec = gApp.runtimeConfig.standaloneBleScanDurationSec;
@@ -762,7 +921,10 @@ void pollScan() {
     if (millis() - gApp.lastBleScan >= gApp.runtimeConfig.bleScanIntervalMs && !gApp.bleScan->isScanning()) {
         gApp.bleScan->start(gApp.bleScanDurationSec, false);
         gApp.lastBleScan = millis();
+        oink::log::noteWardriveScanStart("ble_cycle");
     }
+
+    pollWardriveWifiScan();
 
     if (!gApp.bleScan->isScanning() && millis() - gApp.lastBleScan > static_cast<unsigned long>(gApp.bleScanDurationSec) * 1000UL) {
         gApp.bleScan->clearResults();
@@ -798,6 +960,7 @@ void setScanningEnabled(bool enabled) {
     if (!gApp.bleScan->isScanning()) {
         gApp.bleScan->start(gApp.bleScanDurationSec, false);
         gApp.lastBleScan = millis();
+        oink::log::noteWardriveScanStart("ble_cycle");
     }
 }
 

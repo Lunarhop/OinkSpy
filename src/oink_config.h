@@ -28,6 +28,10 @@
 #define OINK_GNSS_LED_PIN LED_BUILTIN
 #endif
 
+#ifndef OINK_WDRIVE_DEBUG
+#define OINK_WDRIVE_DEBUG 0
+#endif
+
 namespace oink::config {
 
 static constexpr uint8_t kButtonPin = D1;
@@ -46,6 +50,10 @@ static constexpr int kMaxDetections = 200;
 static constexpr unsigned long kBleScanIntervalMs = 3000;
 static constexpr int kStandaloneBleScanDurationSec = 2;
 static constexpr int kCompanionBleScanDurationSec = 3;
+static constexpr unsigned long kWardriveWifiScanIntervalMs = 10000;
+// Passive AP scans run alongside BLE and SoftAP traffic, so they need a bit more
+// dwell-time headroom than the bare minimum to avoid async timeout churn.
+static constexpr uint32_t kWardriveWifiMaxMsPerChannel = 250;
 static constexpr unsigned long kGpsStaleMs = 30000;
 static constexpr unsigned long kSerialTimeoutMs = 5000;
 static constexpr unsigned long kAlertFlashMs = 2000;

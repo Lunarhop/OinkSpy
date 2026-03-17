@@ -6,10 +6,12 @@
 #include <SPIFFS.h>
 #include <SdFat.h>
 #include <cstring>
+#include <math.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
 #include "oink_config.h"
+#include "oink_scan.h"
 #include "oink_settings.h"
 #include "oink_state.h"
 #include "oink_time.h"
@@ -59,10 +61,42 @@ struct WardriveDedupEntry {
     char mac[18];
     char method[32];
     unsigned long lastLoggedMs;
+    bool hasGps;
+    double gpsLat;
+    double gpsLon;
 };
 
 WardriveDedupEntry gWardriveDedup[kWardriveDedupEntryCount] = {};
 size_t gWardriveDedupNext = 0;
+
+#if OINK_WDRIVE_DEBUG
+constexpr size_t kWardriveDebugRingSize = 20;
+constexpr unsigned long kWardriveDebugLogIntervalMs = 5000UL;
+
+struct WardriveDebugEvent {
+    unsigned long millisAtEvent;
+    char eventType[16];
+    char decision[16];
+    char reason[24];
+    char method[32];
+    int rssi;
+    int count;
+    bool hasGps;
+    bool timeSynced;
+};
+
+oink::log::WardriveDebugMetrics gWardriveDebugMetrics = {};
+WardriveDebugEvent gWardriveDebugRing[kWardriveDebugRingSize] = {};
+size_t gWardriveDebugHead = 0;
+size_t gWardriveDebugCount = 0;
+unsigned long gWardriveDebugCycleResults = 0;
+unsigned long gWardriveDebugLastCycleResults = 0;
+unsigned long gWardriveDebugLastLogMs = 0;
+bool gWardriveDebugLastFlushOk = true;
+char gWardriveDebugLastFlushReason[24] = "idle";
+char gWardriveDebugWifiMode[12] = "unknown";
+char gWardriveDebugWifiReason[24] = "idle";
+#endif
 
 void rememberRecentEvent(const LogEvent& event) {
     if (!oink::gApp.mutex || xSemaphoreTake(oink::gApp.mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -154,6 +188,32 @@ void resetWardriveDedup() {
     gWardriveDedupNext = 0;
 }
 
+double wardriveDistanceMeters(double lat1, double lon1, double lat2, double lon2) {
+    constexpr double kEarthRadiusMeters = 6371000.0;
+    constexpr double kPi = 3.14159265358979323846;
+    double dLat = (lat2 - lat1) * (kPi / 180.0);
+    double dLon = (lon2 - lon1) * (kPi / 180.0);
+    double aLat1 = lat1 * (kPi / 180.0);
+    double aLat2 = lat2 * (kPi / 180.0);
+    double sinLat = sin(dLat / 2.0);
+    double sinLon = sin(dLon / 2.0);
+    double a = sinLat * sinLat + cos(aLat1) * cos(aLat2) * sinLon * sinLon;
+    double c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+    return kEarthRadiusMeters * c;
+}
+
+void updateWardriveDedupEntry(WardriveDedupEntry& entry, const oink::Detection& detection) {
+    entry.lastLoggedMs = millis();
+    entry.hasGps = detection.hasGPS;
+    if (detection.hasGPS) {
+        entry.gpsLat = detection.gpsLat;
+        entry.gpsLon = detection.gpsLon;
+    } else {
+        entry.gpsLat = 0.0;
+        entry.gpsLon = 0.0;
+    }
+}
+
 bool wardriveCanRun(String& message) {
     message = "";
     if (!oink::gApp.runtimeConfig.wardrive.enabled) {
@@ -180,6 +240,7 @@ size_t wardriveRotationBytes() {
 }
 
 String csvField(const char* text);
+void flushWardriveFile(const char* reason);
 
 String buildWardriveCsvLine(const oink::Detection& detection) {
     char isoBuffer[40];
@@ -261,7 +322,7 @@ bool openWardriveFile() {
         gWardriveFile.println("# device_id=" + String(oink::settings::deviceId()));
         gWardriveFile.println("# boot_count=" + String(oink::settings::bootCount()));
         gWardriveFile.println("millis,epoch,iso8601,time_source,device_id,boot_count,mac,name,method,rssi,count,is_raven,raven_fw,gps_lat,gps_lon,gps_acc");
-        gWardriveFile.flush();
+        flushWardriveFile("header");
         oink::gApp.wardriveCurrentFileBytes = static_cast<size_t>(gWardriveFile.fileSize());
     }
 
@@ -274,7 +335,7 @@ bool openWardriveFile() {
 
 void closeWardriveFile() {
     if (gWardriveFile) {
-        gWardriveFile.flush();
+        flushWardriveFile("close");
         gWardriveFile.close();
     }
     oink::gApp.wardriveActive = false;
@@ -286,6 +347,133 @@ void clearWardriveRuntimeState() {
     oink::gApp.wardriveLastRotateMs = 0;
     oink::gApp.wardriveCurrentFileBytes = 0;
     oink::gApp.wardriveCurrentPath[0] = '\0';
+}
+
+#if OINK_WDRIVE_DEBUG
+void refreshWardriveDebugMetrics() {
+    gWardriveDebugMetrics.ringbufSize = gWardriveDebugCount;
+    gWardriveDebugMetrics.lastFlushTs = oink::gApp.wardriveLastFlushMs;
+    gWardriveDebugMetrics.wardriveEnabled = oink::gApp.runtimeConfig.wardrive.enabled;
+}
+
+void updateWardriveWifiDebugState(const char* wifiMode, bool staEnabled, bool pending) {
+    strlcpy(gWardriveDebugWifiMode, wifiMode ? wifiMode : "unknown", sizeof(gWardriveDebugWifiMode));
+    gWardriveDebugMetrics.staEnabled = staEnabled;
+    gWardriveDebugMetrics.wifiScanPending = pending;
+}
+
+void pushWardriveDebugEvent(const char* eventType,
+                            const char* decision,
+                            const char* reason,
+                            const char* method,
+                            int rssi,
+                            int count,
+                            bool hasGps,
+                            bool timeSynced) {
+    WardriveDebugEvent& event = gWardriveDebugRing[gWardriveDebugHead];
+    memset(&event, 0, sizeof(event));
+    event.millisAtEvent = millis();
+    strlcpy(event.eventType, eventType ? eventType : "event", sizeof(event.eventType));
+    strlcpy(event.decision, decision ? decision : "info", sizeof(event.decision));
+    strlcpy(event.reason, reason ? reason : "", sizeof(event.reason));
+    strlcpy(event.method, method ? method : "", sizeof(event.method));
+    event.rssi = rssi;
+    event.count = count;
+    event.hasGps = hasGps;
+    event.timeSynced = timeSynced;
+
+    gWardriveDebugHead = (gWardriveDebugHead + 1) % kWardriveDebugRingSize;
+    if (gWardriveDebugCount < kWardriveDebugRingSize) {
+        ++gWardriveDebugCount;
+    }
+    refreshWardriveDebugMetrics();
+}
+
+void maybeLogWardriveDebugSummary() {
+    if (millis() - gWardriveDebugLastLogMs < kWardriveDebugLogIntervalMs) {
+        return;
+    }
+    gWardriveDebugLastLogMs = millis();
+    refreshWardriveDebugMetrics();
+    printf("[OINK-YOU] WDRIVE dbg scans=%lu seen=%lu logged=%lu dedup=%lu gps_drop=%lu time_drop=%lu flushes=%lu flush_err=%lu wifi_try=%lu wifi_fail=%lu wifi_last=%d wifi_mode=%s sta=%s pending=%s cycle=%lu enabled=%s active=%s\n",
+           gWardriveDebugMetrics.scansRun,
+           gWardriveDebugMetrics.apsSeen,
+           gWardriveDebugMetrics.apsLogged,
+           gWardriveDebugMetrics.apsDroppedDedup,
+           gWardriveDebugMetrics.apsDroppedGps,
+           gWardriveDebugMetrics.apsDroppedTime,
+           gWardriveDebugMetrics.flushes,
+           gWardriveDebugMetrics.flushErrors,
+           gWardriveDebugMetrics.wifiScanAttempts,
+           gWardriveDebugMetrics.wifiScanFailures,
+           gWardriveDebugMetrics.wifiScanResultsLast,
+           gWardriveDebugWifiMode,
+           gWardriveDebugMetrics.staEnabled ? "yes" : "no",
+           gWardriveDebugMetrics.wifiScanPending ? "yes" : "no",
+           gWardriveDebugLastCycleResults,
+           oink::gApp.runtimeConfig.wardrive.enabled ? "yes" : "no",
+           oink::gApp.wardriveActive ? "yes" : "no");
+}
+
+void noteWardriveFlushResult(bool ok, const char* reason) {
+    ++gWardriveDebugMetrics.flushes;
+    if (!ok) {
+        ++gWardriveDebugMetrics.flushErrors;
+    }
+    gWardriveDebugLastFlushOk = ok;
+    strlcpy(gWardriveDebugLastFlushReason, reason ? reason : "", sizeof(gWardriveDebugLastFlushReason));
+    if (ok) {
+        oink::gApp.wardriveLastFlushMs = millis();
+        gWardriveDebugMetrics.lastFlushTs = millis();
+    }
+    pushWardriveDebugEvent("flush", ok ? "ok" : "error", reason, "", 0, 0, oink::scan::gpsIsFresh(), oink::timeutil::isSynced());
+    maybeLogWardriveDebugSummary();
+}
+
+void noteWardriveWifiScanStateImpl(const char* decision,
+                                   const char* reason,
+                                   int resultCount,
+                                   const char* wifiMode,
+                                   bool staEnabled,
+                                   bool pending) {
+    updateWardriveWifiDebugState(wifiMode, staEnabled, pending);
+    if (decision && strcmp(decision, "start") == 0) {
+        ++gWardriveDebugMetrics.wifiScanAttempts;
+    } else if (decision && strcmp(decision, "error") == 0) {
+        ++gWardriveDebugMetrics.wifiScanFailures;
+    } else if (decision && strcmp(decision, "complete") == 0) {
+        gWardriveDebugMetrics.wifiScanResultsLast = resultCount;
+    }
+    strlcpy(gWardriveDebugWifiReason, reason ? reason : "", sizeof(gWardriveDebugWifiReason));
+    pushWardriveDebugEvent("wifi_scan",
+                           decision ? decision : "info",
+                           reason ? reason : "",
+                           wifiMode ? wifiMode : "",
+                           0,
+                           resultCount,
+                           oink::scan::gpsIsFresh(),
+                           oink::timeutil::isSynced());
+    maybeLogWardriveDebugSummary();
+}
+#endif
+
+void flushWardriveFile(const char* reason) {
+    if (!gWardriveFile) {
+        return;
+    }
+
+    gWardriveFile.flush();
+    bool ok = !gWardriveFile.getWriteError();
+    if (!ok) {
+        oink::gApp.sdLoggingHealthy = false;
+    }
+#if OINK_WDRIVE_DEBUG
+    noteWardriveFlushResult(ok, reason);
+#else
+    if (ok) {
+        oink::gApp.wardriveLastFlushMs = millis();
+    }
+#endif
 }
 
 bool shouldLogWardrive(const oink::Detection& detection) {
@@ -306,9 +494,35 @@ bool shouldLogWardrive(const oink::Detection& detection) {
         }
         if (strcasecmp(entry.mac, detection.mac) == 0 && strcasecmp(entry.method, detection.method) == 0) {
             if (millis() - entry.lastLoggedMs < windowMs) {
+                bool movedEnough = false;
+                if (detection.hasGPS && entry.hasGps &&
+                    oink::gApp.runtimeConfig.wardrive.moveThresholdMeters > 0) {
+                    movedEnough =
+                        wardriveDistanceMeters(entry.gpsLat,
+                                               entry.gpsLon,
+                                               detection.gpsLat,
+                                               detection.gpsLon) >=
+                        static_cast<double>(oink::gApp.runtimeConfig.wardrive.moveThresholdMeters);
+                }
+                if (movedEnough) {
+                    updateWardriveDedupEntry(entry, detection);
+                    return true;
+                }
+#if OINK_WDRIVE_DEBUG
+                ++gWardriveDebugMetrics.apsDroppedDedup;
+                pushWardriveDebugEvent("candidate",
+                                       "dropped",
+                                       "dedup",
+                                       detection.method,
+                                       detection.rssi,
+                                       detection.count,
+                                       detection.hasGPS,
+                                       oink::timeutil::isSynced());
+                maybeLogWardriveDebugSummary();
+#endif
                 return false;
             }
-            entry.lastLoggedMs = millis();
+            updateWardriveDedupEntry(entry, detection);
             return true;
         }
     }
@@ -316,7 +530,7 @@ bool shouldLogWardrive(const oink::Detection& detection) {
     WardriveDedupEntry& slot = gWardriveDedup[gWardriveDedupNext];
     strlcpy(slot.mac, detection.mac, sizeof(slot.mac));
     strlcpy(slot.method, detection.method, sizeof(slot.method));
-    slot.lastLoggedMs = millis();
+    updateWardriveDedupEntry(slot, detection);
     gWardriveDedupNext = (gWardriveDedupNext + 1) % kWardriveDedupEntryCount;
     return true;
 }
@@ -872,6 +1086,57 @@ void prepareSdLogs() {
     }
 }
 
+void noteWardriveScanStart(const char* reason) {
+#if OINK_WDRIVE_DEBUG
+    ++gWardriveDebugMetrics.scansRun;
+    gWardriveDebugMetrics.lastScanTs = millis();
+    gWardriveDebugLastCycleResults = gWardriveDebugCycleResults;
+    gWardriveDebugCycleResults = 0;
+    pushWardriveDebugEvent("scan",
+                           "start",
+                           reason ? reason : (oink::scan::isScanningEnabled() ? "scan_cycle" : "scan_paused"),
+                           "",
+                           0,
+                           static_cast<int>(gWardriveDebugLastCycleResults),
+                           oink::scan::gpsIsFresh(),
+                           oink::timeutil::isSynced());
+    maybeLogWardriveDebugSummary();
+#endif
+}
+
+void noteWardriveScanCandidate(const char* method, int rssi, int count, bool hasGps, bool timeSynced) {
+#if OINK_WDRIVE_DEBUG
+    ++gWardriveDebugMetrics.apsSeen;
+    ++gWardriveDebugCycleResults;
+    pushWardriveDebugEvent("scan", "seen", "candidate", method, rssi, count, hasGps, timeSynced);
+    maybeLogWardriveDebugSummary();
+#else
+    (void)method;
+    (void)rssi;
+    (void)count;
+    (void)hasGps;
+    (void)timeSynced;
+#endif
+}
+
+void noteWardriveWifiScanState(const char* decision,
+                               const char* reason,
+                               int resultCount,
+                               const char* wifiMode,
+                               bool staEnabled,
+                               bool pending) {
+#if OINK_WDRIVE_DEBUG
+    noteWardriveWifiScanStateImpl(decision, reason, resultCount, wifiMode, staEnabled, pending);
+#else
+    (void)decision;
+    (void)reason;
+    (void)resultCount;
+    (void)wifiMode;
+    (void)staEnabled;
+    (void)pending;
+#endif
+}
+
 void beginWardriveSession() {
     closeWardriveFile();
     clearWardriveRuntimeState();
@@ -883,17 +1148,48 @@ void beginWardriveSession() {
         if (message.length()) {
             printf("[OINK-YOU] Wardrive inactive: %s\n", message.c_str());
         }
+#if OINK_WDRIVE_DEBUG
+        pushWardriveDebugEvent("state",
+                               "inactive",
+                               message.c_str(),
+                               "",
+                               0,
+                               0,
+                               oink::scan::gpsIsFresh(),
+                               oink::timeutil::isSynced());
+        maybeLogWardriveDebugSummary();
+#endif
         return;
     }
 
     if (!openWardriveFile()) {
         printf("[OINK-YOU] Wardrive file open failed\n");
+#if OINK_WDRIVE_DEBUG
+        pushWardriveDebugEvent("state",
+                               "error",
+                               "open_failed",
+                               "",
+                               0,
+                               0,
+                               oink::scan::gpsIsFresh(),
+                               oink::timeutil::isSynced());
+        maybeLogWardriveDebugSummary();
+#endif
+        return;
     }
+#if OINK_WDRIVE_DEBUG
+    pushWardriveDebugEvent("state", "enabled", "session_started", "", 0, 0, oink::scan::gpsIsFresh(), oink::timeutil::isSynced());
+    maybeLogWardriveDebugSummary();
+#endif
 }
 
 void endWardriveSession() {
     closeWardriveFile();
     clearWardriveRuntimeState();
+#if OINK_WDRIVE_DEBUG
+    pushWardriveDebugEvent("state", "disabled", "session_stopped", "", 0, 0, oink::scan::gpsIsFresh(), oink::timeutil::isSynced());
+    maybeLogWardriveDebugSummary();
+#endif
 }
 
 void pollWardrive() {
@@ -910,8 +1206,7 @@ void pollWardrive() {
         return;
     }
 
-    gWardriveFile.flush();
-    gApp.wardriveLastFlushMs = millis();
+    flushWardriveFile("interval");
 }
 
 void appendWardriveDetection(const Detection& detection) {
@@ -943,17 +1238,41 @@ void appendWardriveDetection(const Detection& detection) {
     if (!gWardriveFile.println(line)) {
         printf("[OINK-YOU] Wardrive append failed: %s\n", gApp.wardriveCurrentPath);
         gApp.sdLoggingHealthy = false;
+#if OINK_WDRIVE_DEBUG
+        ++gWardriveDebugMetrics.flushErrors;
+        pushWardriveDebugEvent("candidate",
+                               "error",
+                               "sd_write",
+                               detection.method,
+                               detection.rssi,
+                               detection.count,
+                               detection.hasGPS,
+                               oink::timeutil::isSynced());
+        maybeLogWardriveDebugSummary();
+#endif
         closeWardriveFile();
         return;
     }
 
     gApp.sdLoggingHealthy = true;
     gApp.wardriveCurrentFileBytes = static_cast<size_t>(gWardriveFile.fileSize());
+#if OINK_WDRIVE_DEBUG
+    ++gWardriveDebugMetrics.apsLogged;
+    pushWardriveDebugEvent("candidate",
+                           "kept",
+                           detection.hasGPS ? (oink::timeutil::isSynced() ? "logged" : "time_optional")
+                                            : (oink::timeutil::isSynced() ? "gps_optional" : "gps_time_optional"),
+                           detection.method,
+                           detection.rssi,
+                           detection.count,
+                           detection.hasGPS,
+                           oink::timeutil::isSynced());
+    maybeLogWardriveDebugSummary();
+#endif
     unsigned long flushIntervalMs =
         static_cast<unsigned long>(gApp.runtimeConfig.wardrive.flushIntervalSeconds) * 1000UL;
     if (flushIntervalMs == 0 || millis() - gApp.wardriveLastFlushMs >= flushIntervalMs) {
-        gWardriveFile.flush();
-        gApp.wardriveLastFlushMs = millis();
+        flushWardriveFile("append");
     }
 }
 
@@ -984,7 +1303,7 @@ WardriveStatus wardriveStatus() {
 
 void writeWardriveStatusJson(Print& out) {
     WardriveStatus status = wardriveStatus();
-    out.printf("{\"enabled\":%s,\"active\":%s,\"can_start\":%s,\"sd_ready\":%s,\"config_valid\":%s,\"flush_interval_seconds\":%lu,\"file_rotation_mb\":%lu,\"dedup_window_seconds\":%lu,\"log_format\":\"%s\",\"current_path\":\"%s\",\"current_file_bytes\":%lu,\"message\":\"%s\"}",
+    out.printf("{\"enabled\":%s,\"active\":%s,\"can_start\":%s,\"sd_ready\":%s,\"config_valid\":%s,\"flush_interval_seconds\":%lu,\"file_rotation_mb\":%lu,\"dedup_window_seconds\":%lu,\"move_threshold_meters\":%u,\"log_format\":\"%s\",\"current_path\":\"%s\",\"current_file_bytes\":%lu,\"message\":\"%s\"}",
                status.enabled ? "true" : "false",
                status.active ? "true" : "false",
                status.canStart ? "true" : "false",
@@ -993,10 +1312,70 @@ void writeWardriveStatusJson(Print& out) {
                status.flushIntervalSeconds,
                status.fileRotationMb,
                status.dedupWindowSeconds,
+               static_cast<unsigned>(gApp.runtimeConfig.wardrive.moveThresholdMeters),
                status.logFormat,
                status.currentPath,
                status.currentFileBytes,
                status.message);
+}
+
+void writeWardriveDebugJson(Print& out) {
+#if OINK_WDRIVE_DEBUG
+    refreshWardriveDebugMetrics();
+    out.printf("{\"debug_compiled\":true,\"protocol\":\"ble+wifi_ap\",\"diagnosis\":\"Wardrive ingests matched BLE detections plus passive Wi-Fi AP scan results; GPS and time are optional.\",\"metrics\":{\"scans_run\":%lu,\"aps_seen\":%lu,\"aps_logged\":%lu,\"aps_dropped_dedup\":%lu,\"aps_dropped_gps\":%lu,\"aps_dropped_time\":%lu,\"flushes\":%lu,\"flush_errors\":%lu,\"wifi_scan_attempts\":%lu,\"wifi_scan_failures\":%lu,\"wifi_scan_results_last\":%d,\"ringbuf_size\":%u,\"last_scan_ts\":%lu,\"last_flush_ts\":%lu,\"wardrive_enabled\":%s,\"last_cycle_results\":%lu,\"last_flush_ok\":%s,\"last_flush_reason\":\"%s\",\"wifi_mode\":\"%s\",\"wifi_reason\":\"%s\",\"sta_enabled\":%s,\"wifi_scan_pending\":%s,\"scan_paused\":%s,\"gps_fresh\":%s,\"time_synced\":%s,\"move_threshold_meters\":%u},\"events\":[",
+               gWardriveDebugMetrics.scansRun,
+               gWardriveDebugMetrics.apsSeen,
+               gWardriveDebugMetrics.apsLogged,
+               gWardriveDebugMetrics.apsDroppedDedup,
+               gWardriveDebugMetrics.apsDroppedGps,
+               gWardriveDebugMetrics.apsDroppedTime,
+               gWardriveDebugMetrics.flushes,
+               gWardriveDebugMetrics.flushErrors,
+               gWardriveDebugMetrics.wifiScanAttempts,
+               gWardriveDebugMetrics.wifiScanFailures,
+               gWardriveDebugMetrics.wifiScanResultsLast,
+               static_cast<unsigned>(gWardriveDebugMetrics.ringbufSize),
+               gWardriveDebugMetrics.lastScanTs,
+               gWardriveDebugMetrics.lastFlushTs,
+               gWardriveDebugMetrics.wardriveEnabled ? "true" : "false",
+               gWardriveDebugLastCycleResults,
+               gWardriveDebugLastFlushOk ? "true" : "false",
+               gWardriveDebugLastFlushReason,
+               gWardriveDebugWifiMode,
+               gWardriveDebugWifiReason,
+               gWardriveDebugMetrics.staEnabled ? "true" : "false",
+               gWardriveDebugMetrics.wifiScanPending ? "true" : "false",
+               oink::scan::isScanningEnabled() ? "false" : "true",
+               oink::scan::gpsIsFresh() ? "true" : "false",
+               oink::timeutil::isSynced() ? "true" : "false",
+               static_cast<unsigned>(gApp.runtimeConfig.wardrive.moveThresholdMeters));
+
+    for (size_t i = 0; i < gWardriveDebugCount; ++i) {
+        size_t index = (gWardriveDebugHead + kWardriveDebugRingSize - gWardriveDebugCount + i) % kWardriveDebugRingSize;
+        const WardriveDebugEvent& event = gWardriveDebugRing[index];
+        if (i > 0) {
+            out.print(',');
+        }
+        out.printf("{\"millis\":%lu,\"event\":\"%s\",\"decision\":\"%s\",\"reason\":\"%s\",\"method\":\"%s\",\"rssi\":%d,\"count\":%d,\"has_gps\":%s,\"time_synced\":%s}",
+                   event.millisAtEvent,
+                   event.eventType,
+                   event.decision,
+                   event.reason,
+                   event.method,
+                   event.rssi,
+                   event.count,
+                   event.hasGps ? "true" : "false",
+                   event.timeSynced ? "true" : "false");
+    }
+    out.print("]}");
+#else
+    out.print("{\"debug_compiled\":false,\"protocol\":\"ble+wifi_ap\",\"diagnosis\":\"Wardrive debug metrics are compiled out. Rebuild with -DOINK_WDRIVE_DEBUG=1.\"}");
+#endif
+}
+
+void printWardriveDebug(Stream& out) {
+    writeWardriveDebugJson(out);
+    out.println();
 }
 
 void appendDetectionEvent(const char* mac,

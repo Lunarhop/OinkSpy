@@ -440,6 +440,11 @@ void setupServer() {
         oink::log::writeWardriveStatusJson(*resp);
         request->send(resp);
     });
+    gServer.on("/api/wardrive/debug", HTTP_GET, [](AsyncWebServerRequest* request) {
+        AsyncResponseStream* resp = request->beginResponseStream("application/json");
+        oink::log::writeWardriveDebugJson(*resp);
+        request->send(resp);
+    });
     gServer.on("/api/wardrive", HTTP_POST, [](AsyncWebServerRequest* request) {}, nullptr,
                [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
                    String* body = static_cast<String*>(request->_tempObject);
@@ -654,7 +659,7 @@ void setupServer() {
             int placed = 0;
             for (JsonObject detection : doc.as<JsonArray>()) {
                 JsonObject gps = detection["gps"];
-                if (!gps || !gps.containsKey("lat")) {
+                if (!gps || !gps["lat"].is<double>()) {
                     continue;
                 }
                 bool isRaven = detection["raven"] | false;
@@ -815,7 +820,7 @@ void setup() {
     oink::board::initializeDisplay();
 
     WiFi.onEvent(handleApEvent);
-    WiFi.mode(WIFI_AP);
+    WiFi.mode(gApp.runtimeConfig.wardrive.enabled ? WIFI_AP_STA : WIFI_AP);
     delay(100);
     WiFi.softAP(gApp.runtimeConfig.apSsid, gApp.runtimeConfig.apPassword);
     printf("[OINK-YOU] AP: %s / %s\n", gApp.runtimeConfig.apSsid, gApp.runtimeConfig.apPassword);
@@ -840,7 +845,7 @@ void setup() {
         printf("[OINK-YOU] SD session JSONL: %s\n", oink::log::sessionJsonlPath());
     }
     printf("[OINK-YOU] Controls: short=scan toggle, long=audio mode, double=bookmark\n");
-    printf("[OINK-YOU] Serial commands: gnss status, wardrive status|on|off|toggle\n");
+    printf("[OINK-YOU] Serial commands: gnss status, wardrive status|debug|on|off|toggle\n");
     printf("[OINK-YOU] Detection methods: MAC prefix, device name, manufacturer ID, Raven UUID\n");
     printf("[OINK-YOU] Dashboard: http://192.168.4.1\n");
     printf("[OINK-YOU] Ready - BLE GATT + AP mode + OLED\n\n");

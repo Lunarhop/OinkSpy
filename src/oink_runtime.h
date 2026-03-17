@@ -9,6 +9,7 @@ struct WardriveConfig {
     uint16_t flushIntervalSeconds;
     uint16_t fileRotationMb;
     uint16_t dedupWindowSeconds;
+    uint16_t moveThresholdMeters;
     char logFormat[8];
 };
 
