@@ -1,17 +1,23 @@
 import importlib.util
+import json
+import pickle
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
 
 
-@pytest.fixture()
-def app_module(monkeypatch, tmp_path):
+def load_app_module(monkeypatch, tmp_path, secret_key="test-secret"):
     api_dir = Path(__file__).resolve().parents[1]
     monkeypatch.chdir(api_dir)
-    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.delenv("OINKSPY_SETTINGS_FILE", raising=False)
+    if secret_key is None:
+        monkeypatch.delenv("SECRET_KEY", raising=False)
+    else:
+        monkeypatch.setenv("SECRET_KEY", secret_key)
 
-    module_name = "oinkspy_flockyou_test"
+    module_name = f"oinkspy_flockyou_test_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, api_dir / "flockyou.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
@@ -19,24 +25,40 @@ def app_module(monkeypatch, tmp_path):
 
     module.app.config["TESTING"] = True
     module.DATA_DIR = tmp_path
-    module.SETTINGS_FILE = tmp_path / "settings.json"
-    module.CUMULATIVE_DATA_FILE = tmp_path / "cumulative.pkl"
+    module.EXPORTS_DIR = tmp_path / "exports"
+    module.SETTINGS_SAMPLE_FILE = tmp_path / "settings.json"
+    module.SETTINGS_FILE = tmp_path / "settings.local.json"
+    module.CUMULATIVE_DATA_FILE = tmp_path / "cumulative.json"
+    module.LEGACY_CUMULATIVE_DATA_FILE = tmp_path / "cumulative.pkl"
+    module.DATA_DIR.mkdir(exist_ok=True)
     module.detections.clear()
     module.cumulative_detections.clear()
     module.gps_data = None
     module.gps_history.clear()
     module.serial_connection = None
     module.gps_enabled = False
+    module.gps_source = None
     module.flock_device_connected = False
     module.flock_device_port = None
     module.flock_serial_connection = None
-    module.settings = module.DEFAULT_SETTINGS.copy()
+    module.settings = json.loads(json.dumps(module.DEFAULT_SETTINGS))
     module.oui_database.clear()
     module.socketio.emit = lambda *args, **kwargs: None
 
-    yield module
+    return module, module_name
 
+
+def unload_app_module(module_name):
     sys.modules.pop(module_name, None)
+
+
+@pytest.fixture()
+def app_module(monkeypatch, tmp_path):
+    module, module_name = load_app_module(monkeypatch, tmp_path)
+    try:
+        yield module
+    finally:
+        unload_app_module(module_name)
 
 
 @pytest.fixture()
@@ -52,6 +74,8 @@ def test_help_endpoint_returns_quickstart(client):
     assert payload["status"] == "success"
     assert "quickstart" in payload
     assert payload["endpoints"]["status"] == "/api/status"
+    assert payload["configuration"]["settings_file"].endswith("settings.local.json")
+    assert payload["configuration"]["settings_sample_file"].endswith("settings.json")
     assert "OINKSPY_SERIAL_PORTS" in payload["troubleshooting"][1]
 
 
@@ -96,7 +120,7 @@ def test_connect_gps_requires_port(client):
     assert "OINKSPY_SERIAL_PORTS" in payload["hint"]
 
 
-def test_update_settings_normalizes_invalid_filter(app_module, client):
+def test_update_settings_normalizes_invalid_filter_and_writes_local_override(app_module, client):
     response = client.post(
         "/api/settings",
         json={"filter": "not-a-real-filter", "gps_port": "/dev/ttyUSB0"},
@@ -108,6 +132,7 @@ def test_update_settings_normalizes_invalid_filter(app_module, client):
     assert payload["settings"]["filter"] == "all"
     assert payload["settings"]["gps_port"] == "/dev/ttyUSB0"
     assert app_module.SETTINGS_FILE.exists()
+    assert not app_module.SETTINGS_SAMPLE_FILE.exists()
 
 
 def test_detection_patterns_endpoint_returns_default_groups(client):
@@ -139,3 +164,42 @@ def test_update_detection_patterns_normalizes_values(client):
     assert payload["patterns"]["macs_mfr"]["enabled"] is False
     assert payload["patterns"]["mfr"]["values"] == ["0x09C8"]
     assert payload["patterns"]["raven"]["values"] == ["00003100-0000-1000-8000-00805f9b34fb"]
+
+
+def test_app_uses_ephemeral_secret_key_when_unset(monkeypatch, tmp_path):
+    module, module_name = load_app_module(monkeypatch, tmp_path, secret_key=None)
+    try:
+        assert module.app.config["SECRET_KEY_SOURCE"] == "ephemeral"
+        assert isinstance(module.app.config["SECRET_KEY"], str)
+        assert len(module.app.config["SECRET_KEY"]) >= 20
+    finally:
+        unload_app_module(module_name)
+
+
+def test_load_cumulative_detections_migrates_legacy_pickle(monkeypatch, tmp_path):
+    module, module_name = load_app_module(monkeypatch, tmp_path)
+    try:
+        legacy_payload = [{"mac_address": "AA:BB:CC:DD:EE:FF", "detection_method": "probe_request"}]
+        with open(module.LEGACY_CUMULATIVE_DATA_FILE, "wb") as handle:
+            pickle.dump(legacy_payload, handle)
+
+        module.load_cumulative_detections()
+
+        assert module.cumulative_detections == legacy_payload
+        assert module.CUMULATIVE_DATA_FILE.exists()
+        assert json.loads(module.CUMULATIVE_DATA_FILE.read_text(encoding="utf-8")) == legacy_payload
+    finally:
+        unload_app_module(module_name)
+
+
+def test_load_cumulative_detections_handles_bad_legacy_pickle(monkeypatch, tmp_path):
+    module, module_name = load_app_module(monkeypatch, tmp_path)
+    try:
+        module.LEGACY_CUMULATIVE_DATA_FILE.write_bytes(b"not-a-pickle")
+
+        module.load_cumulative_detections()
+
+        assert module.cumulative_detections == []
+        assert not module.CUMULATIVE_DATA_FILE.exists()
+    finally:
+        unload_app_module(module_name)

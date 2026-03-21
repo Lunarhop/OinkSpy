@@ -4,6 +4,7 @@ import csv
 import glob
 import os
 import re
+import secrets
 from datetime import datetime
 import time
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -11,7 +12,6 @@ import threading
 import serial
 import queue
 import uuid
-import pickle
 from pathlib import Path
 
 try:
@@ -19,8 +19,51 @@ try:
 except ImportError:
     serial_list_ports = None
 
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / 'data'
+EXPORTS_DIR = BASE_DIR / 'exports'
+OUI_FILE = BASE_DIR / 'oui.txt'
+CUMULATIVE_DATA_FILE = DATA_DIR / 'cumulative_detections.json'
+LEGACY_CUMULATIVE_DATA_FILE = DATA_DIR / 'cumulative_detections.pkl'
+SETTINGS_SAMPLE_FILE = DATA_DIR / 'settings.json'
+SETTINGS_FILE = Path(os.environ.get('OINKSPY_SETTINGS_FILE', DATA_DIR / 'settings.local.json'))
+
+
+def env_flag(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def env_int(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"Invalid integer for {name}: {raw!r}; using {default}")
+        return default
+
+
+def configure_app(flask_app):
+    secret_key = (os.environ.get('SECRET_KEY') or '').strip()
+    if secret_key:
+        flask_app.config['SECRET_KEY'] = secret_key
+        flask_app.config['SECRET_KEY_SOURCE'] = 'environment'
+    else:
+        flask_app.config['SECRET_KEY'] = secrets.token_urlsafe(32)
+        flask_app.config['SECRET_KEY_SOURCE'] = 'ephemeral'
+        print("WARNING: SECRET_KEY not set; using an ephemeral development key. Sessions will reset after restart.")
+
+    flask_app.config['OINKSPY_HOST'] = os.environ.get('OINKSPY_HOST', '0.0.0.0')
+    flask_app.config['OINKSPY_PORT'] = env_int('OINKSPY_PORT', 5000)
+    flask_app.config['OINKSPY_DEBUG'] = env_flag('OINKSPY_DEBUG', False)
+
+
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'flockyou_dev_key_2024')
+configure_app(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
 
 # Global variables
@@ -105,13 +148,8 @@ SERIAL_PORT_GLOBS = (
     '/dev/ttyXRUSB*',
 )
 
-# Data storage paths
-DATA_DIR = Path('data')
-CUMULATIVE_DATA_FILE = DATA_DIR / 'cumulative_detections.pkl'
-SETTINGS_FILE = DATA_DIR / 'settings.json'
-
 # Ensure data directory exists
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def make_default_flock_gnss_status():
@@ -131,15 +169,47 @@ def make_default_flock_gnss_status():
 
 flock_gnss_status = make_default_flock_gnss_status()
 
+
+def atomic_write_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f'.{path.name}.tmp')
+    try:
+        with open(temp_path, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, indent=2)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+
+def normalize_detection_records(payload):
+    if not isinstance(payload, list):
+        raise ValueError('Expected a list of detection records')
+    return [dict(item) for item in payload if isinstance(item, dict)]
+
 # Persistent storage functions
 def load_cumulative_detections():
     """Load cumulative detections from disk"""
     global cumulative_detections
     try:
         if CUMULATIVE_DATA_FILE.exists():
-            with open(CUMULATIVE_DATA_FILE, 'rb') as f:
-                cumulative_detections = pickle.load(f)
+            with open(CUMULATIVE_DATA_FILE, 'r', encoding='utf-8') as f:
+                cumulative_detections = normalize_detection_records(json.load(f))
             print(f"Loaded {len(cumulative_detections)} cumulative detections")
+        elif LEGACY_CUMULATIVE_DATA_FILE.exists():
+            import pickle
+
+            with open(LEGACY_CUMULATIVE_DATA_FILE, 'rb') as f:
+                legacy_payload = pickle.load(f)
+            cumulative_detections = normalize_detection_records(legacy_payload)
+            atomic_write_json(CUMULATIVE_DATA_FILE, cumulative_detections)
+            print(
+                f"Migrated {len(cumulative_detections)} cumulative detections "
+                f"from {LEGACY_CUMULATIVE_DATA_FILE.name} to {CUMULATIVE_DATA_FILE.name}"
+            )
         else:
             cumulative_detections = []
     except Exception as e:
@@ -149,8 +219,7 @@ def load_cumulative_detections():
 def save_cumulative_detections():
     """Save cumulative detections to disk"""
     try:
-        with open(CUMULATIVE_DATA_FILE, 'wb') as f:
-            pickle.dump(cumulative_detections, f)
+        atomic_write_json(CUMULATIVE_DATA_FILE, cumulative_detections)
         print(f"Saved {len(cumulative_detections)} cumulative detections")
     except Exception as e:
         print(f"Error saving cumulative detections: {e}")
@@ -159,20 +228,30 @@ def load_settings():
     """Load settings from disk"""
     global settings
     try:
+        loaded_settings = json.loads(json.dumps(DEFAULT_SETTINGS))
+        if SETTINGS_SAMPLE_FILE.exists():
+            with open(SETTINGS_SAMPLE_FILE, 'r', encoding='utf-8') as f:
+                sample_settings = json.load(f)
+            if isinstance(sample_settings, dict):
+                loaded_settings.update(sample_settings)
         if SETTINGS_FILE.exists():
-            with open(SETTINGS_FILE, 'r') as f:
-                settings.update(json.load(f))
-            settings['filter'] = normalize_filter(settings.get('filter'))
-            settings['detection_patterns'] = normalize_detection_patterns(settings.get('detection_patterns'))
-            print(f"Loaded settings: {settings}")
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                local_settings = json.load(f)
+            if isinstance(local_settings, dict):
+                loaded_settings.update(local_settings)
+
+        loaded_settings['filter'] = normalize_filter(loaded_settings.get('filter'))
+        loaded_settings['detection_patterns'] = normalize_detection_patterns(loaded_settings.get('detection_patterns'))
+        settings = loaded_settings
+        print(f"Loaded settings: {settings}")
     except Exception as e:
         print(f"Error loading settings: {e}")
+        settings = json.loads(json.dumps(DEFAULT_SETTINGS))
 
 def save_settings():
     """Save settings to disk"""
     try:
-        with open(SETTINGS_FILE, 'w') as f:
-            json.dump(settings, f, indent=2)
+        atomic_write_json(SETTINGS_FILE, settings)
         print(f"Saved settings: {settings}")
     except Exception as e:
         print(f"Error saving settings: {e}")
@@ -425,7 +504,7 @@ def load_oui_database():
     """Load the IEEE OUI database for manufacturer lookups"""
     global oui_database
     try:
-        with open('oui.txt', 'r', encoding='utf-8', errors='ignore') as f:
+        with open(OUI_FILE, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#') and '(hex)' in line:
@@ -966,7 +1045,7 @@ def connection_monitor():
                     gps_source = None
                 safe_socket_emit('gps_disconnected', {})
             
-            # Check Flock You device connection
+            # Check OinkSpy sniffer connection
             if flock_device_connected:
                 try:
                     request_flock_gnss_status(force=False)
@@ -975,7 +1054,7 @@ def connection_monitor():
                         with connection_lock:
                             flock_device_connected = False
                         safe_socket_emit('flock_disconnected', {})
-                        print("Flock You device connection lost")
+                        print("OinkSpy sniffer connection lost")
                         # Start reconnection attempts
                         attempt_reconnect_flock()
                     else:
@@ -992,7 +1071,7 @@ def connection_monitor():
             time.sleep(2)  # Check every 2 seconds
 
 def attempt_reconnect_flock():
-    """Attempt to reconnect to Flock device"""
+    """Attempt to reconnect to the OinkSpy sniffer"""
     global flock_device_connected, reconnect_attempts, flock_serial_connection
     
     def reconnect_thread():
@@ -1001,7 +1080,7 @@ def attempt_reconnect_flock():
         with app.app_context():
             while not flock_device_connected and reconnect_attempts['flock'] < max_reconnect_attempts:
                 try:
-                    print(f"Attempting to reconnect to Flock device (attempt {reconnect_attempts['flock'] + 1}/{max_reconnect_attempts})")
+                    print(f"Attempting to reconnect to OinkSpy sniffer (attempt {reconnect_attempts['flock'] + 1}/{max_reconnect_attempts})")
                     
                     # Try to reconnect
                     if flock_serial_connection:
@@ -1022,7 +1101,7 @@ def attempt_reconnect_flock():
                     with connection_lock:
                         flock_device_connected = True
                     reconnect_attempts['flock'] = 0
-                    print(f"Successfully reconnected to Flock device on {flock_device_port}")
+                    print(f"Successfully reconnected to OinkSpy sniffer on {flock_device_port}")
                     safe_socket_emit('flock_reconnected', {'port': flock_device_port})
                     
                     # Restart the reading thread
@@ -1036,7 +1115,7 @@ def attempt_reconnect_flock():
                     time.sleep(reconnect_delay)
             
             if reconnect_attempts['flock'] >= max_reconnect_attempts:
-                print("Max reconnection attempts reached for Flock device")
+                print("Max reconnection attempts reached for OinkSpy sniffer")
                 safe_socket_emit('reconnect_failed', {'device': 'flock'})
                 reconnect_attempts['flock'] = 0  # Reset for future attempts
     
@@ -1101,7 +1180,10 @@ def get_help():
             'Optional: connect GPS, or import JSON/CSV/KML exports from the device.'
         ],
         'configuration': {
+            'settings_sample_file': str(SETTINGS_SAMPLE_FILE),
             'settings_file': str(SETTINGS_FILE),
+            'cumulative_data_file': str(CUMULATIVE_DATA_FILE),
+            'legacy_cumulative_data_file': str(LEGACY_CUMULATIVE_DATA_FILE),
             'settings_keys': sorted(DEFAULT_SETTINGS.keys()),
             'filter_values': sorted(ALLOWED_FILTERS),
         },
@@ -1120,6 +1202,7 @@ def get_help():
         'troubleshooting': [
             'If no ports appear, refresh the port list and confirm your USB cable carries data.',
             'If pySerial cannot enumerate ports, set OINKSPY_SERIAL_PORTS=/dev/ttyUSB0,/dev/ttyACM0 to seed the fallback scanner.',
+            'If SECRET_KEY is unset, the dashboard uses an ephemeral key and active sessions reset on restart.',
             'Use the Import menu to validate the dashboard even when the hardware is offline.'
         ]
     })
@@ -1261,7 +1344,7 @@ def disconnect_gps():
 
 @app.route('/api/flock/connect', methods=['POST'])
 def connect_flock():
-    """Connect to Flock You device"""
+    """Connect to the OinkSpy sniffer"""
     global flock_device_connected, flock_device_port, flock_serial_connection
 
     data, error_response = request_json_object()
@@ -1288,7 +1371,7 @@ def connect_flock():
         flock_thread.start()
         request_flock_gnss_status(force=True)
         
-        return jsonify({'status': 'success', 'message': f'Connected to Flock You device on {port}'})
+        return jsonify({'status': 'success', 'message': f'Connected to OinkSpy sniffer on {port}'})
     except Exception as e:
         return json_error(
             f'Failed to connect to OinkSpy on {port}: {str(e)}',
@@ -1297,7 +1380,7 @@ def connect_flock():
 
 @app.route('/api/flock/disconnect', methods=['POST'])
 def disconnect_flock():
-    """Disconnect Flock You device"""
+    """Disconnect the OinkSpy sniffer"""
     global flock_device_connected, flock_device_port, flock_serial_connection, gps_enabled, gps_source
     
     with connection_lock:
@@ -1314,7 +1397,7 @@ def disconnect_flock():
             gps_enabled = False
             gps_source = None
     
-    return jsonify({'status': 'success', 'message': 'Flock You device disconnected'})
+    return jsonify({'status': 'success', 'message': 'OinkSpy sniffer disconnected'})
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
@@ -1328,7 +1411,7 @@ def get_gps_ports():
 
 @app.route('/api/flock/ports', methods=['GET'])
 def get_flock_ports():
-    """Get available serial ports for Flock You device"""
+    """Get available serial ports for the OinkSpy sniffer"""
     return jsonify(discover_serial_ports())
 
 @app.route('/api/export/csv', methods=['GET'])
@@ -1338,19 +1421,18 @@ def export_csv():
     
     if export_type == 'cumulative':
         data_to_export = cumulative_detections
-        filename_prefix = "flockyou_cumulative"
+        filename_prefix = "oinkspy_cumulative"
     else:
         data_to_export = detections
-        filename_prefix = f"flockyou_session_{session_start_time.strftime('%Y%m%d_%H%M%S')}"
+        filename_prefix = f"oinkspy_session_{session_start_time.strftime('%Y%m%d_%H%M%S')}"
     
     if not data_to_export:
         return jsonify({'status': 'error', 'message': 'No detections to export'}), 400
     
     filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    filepath = os.path.join('exports', filename)
-    
-    os.makedirs('exports', exist_ok=True)
-    
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    filepath = EXPORTS_DIR / filename
+
     with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
         fieldnames = [
             'timestamp', 'detection_time', 'server_timestamp', 'protocol', 'detection_method',
@@ -1401,20 +1483,19 @@ def export_kml():
     
     if export_type == 'cumulative':
         data_to_export = cumulative_detections
-        filename_prefix = "flockyou_cumulative"
-        document_name = "Flock You Cumulative Detections"
+        filename_prefix = "oinkspy_cumulative"
+        document_name = "OinkSpy Cumulative Detections"
     else:
         data_to_export = detections
-        filename_prefix = f"flockyou_session_{session_start_time.strftime('%Y%m%d_%H%M%S')}"
-        document_name = f"Flock You Session Detections - {session_start_time.strftime('%Y-%m-%d %H:%M:%S')}"
+        filename_prefix = f"oinkspy_session_{session_start_time.strftime('%Y%m%d_%H%M%S')}"
+        document_name = f"OinkSpy Session Detections - {session_start_time.strftime('%Y-%m-%d %H:%M:%S')}"
     
     if not data_to_export:
         return jsonify({'status': 'error', 'message': 'No detections to export'}), 400
     
     filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.kml"
-    filepath = os.path.join('exports', filename)
-    
-    os.makedirs('exports', exist_ok=True)
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    filepath = EXPORTS_DIR / filename
     
     kml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
@@ -1967,7 +2048,7 @@ def refresh_oui_database():
 
         oui_database = new_oui_database
         
-        with open('oui.txt', 'w', encoding='utf-8') as f:
+        with open(OUI_FILE, 'w', encoding='utf-8') as f:
             for mac, manufacturer in sorted(oui_database.items()):
                 formatted_mac = f"{mac[0:2]}-{mac[2:4]}-{mac[4:6]}"
                 f.write(f"{formatted_mac}   (hex)\t\t\t\t{manufacturer}\n")
@@ -2082,12 +2163,17 @@ if __name__ == '__main__':
     heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
     heartbeat_thread.start()
     
-    print("Starting Flock You API server...")
-    print("Server will be available at: http://localhost:5000")
+    host = app.config['OINKSPY_HOST']
+    port = app.config['OINKSPY_PORT']
+    debug = app.config['OINKSPY_DEBUG']
+
+    print("Starting OinkSpy companion dashboard...")
+    print(f"Server will be available at: http://localhost:{port}")
+    print(f"Secret key source: {app.config['SECRET_KEY_SOURCE']}")
     print("Press Ctrl+C to stop the server")
     
     try:
-        socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
+        socketio.run(app, debug=debug, host=host, port=port, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         print("\nShutting down server...")
         # Clean up connections

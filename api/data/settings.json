@@ -1,5 +1,5 @@
 {
-  "gps_port": "/dev/ttyACM0",
-  "flock_port": "/dev/ttyACM0",
+  "gps_port": "",
+  "flock_port": "",
   "filter": "all"
 }

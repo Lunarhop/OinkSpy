@@ -285,6 +285,12 @@ Then open `http://localhost:5000`.
 
 On Linux, macOS, or WSL, activate the virtual environment with `source .venv/bin/activate` instead.
 
+Runtime file behavior:
+
+- `api/data/settings.json` stays committed as sample/default dashboard state.
+- `api/data/settings.local.json` is the writable local override file used by default.
+- `api/data/cumulative_detections.json` stores cumulative detections, with one-time migration from a legacy `.pkl` file if needed.
+
 Common first-run flow:
 
 1. Connect the XIAO board over USB and open the dashboard.
@@ -316,8 +322,8 @@ Always comply with local laws regarding wireless scanning and radio use.
 | Firmware runtime | SD card `config/oinkspy.json` | compiled defaults in `src/oink_settings.cpp` | built-in defaults |
 | Firmware GNSS wiring | `platformio.ini` `build_flags` | source defaults | built-in defaults |
 | Companion serial discovery | `OINKSPY_SERIAL_PORTS` | pySerial / fallback glob scan | empty list |
-| Companion UI settings | saved `api/data/settings.json` | in-memory defaults | `gps_port=""`, `flock_port=""`, `filter="all"` |
-| Flask secret key | `SECRET_KEY` env var | dev fallback in `api/flockyou.py` | `flockyou_dev_key_2024` |
+| Companion UI settings | local override file `api/data/settings.local.json` | committed sample `api/data/settings.json` | `gps_port=""`, `flock_port=""`, `filter="all"` |
+| Flask secret key | `SECRET_KEY` env var | ephemeral generated key at startup | sessions reset on restart when unset |
 
 ### Firmware SD Config
 
@@ -345,8 +351,35 @@ A starter template is included at `config.oinkspy.example.json`.
 | `rtc_enabled` | `true` | Probes and uses an optional `PCF8563` on I2C |
 | `ota_enabled` | `true` | Enables firmware upload at `/api/ota` from the captive portal |
 
+Client Wi-Fi and WiGLE credentials are intentionally not kept in the normal SD config. Set them from the `TOOLS` tab, or seed them one time in `config/oinkspy.json` as:
+
+```json
+{
+  "client_wifi": {
+    "ssid": "your-uplink-ssid",
+    "password": "your-uplink-password"
+  },
+  "wigle": {
+    "api_name": "your-wigle-api-name",
+    "api_token": "your-wigle-api-token"
+  }
+}
+```
+
+On boot, OinkSpy imports those secrets into NVS memory and rewrites the SD config without them.
+
 ## OTA And RTC
 The device portal now includes a firmware upload tool in the `TOOLS` tab. Upload the PlatformIO-generated `firmware.bin` for the `seeed_xiao_esp32s3` target and the device will reboot automatically after a successful flash.
+
+## WiGLE Uploads
+The `TOOLS` tab can now:
+
+- store client Wi-Fi credentials in memory only
+- store WiGLE API credentials in memory only
+- export the latest captured WiGLE CSV sidecar
+- queue an on-device WiGLE upload once Wardrive is stopped and the client Wi-Fi uplink is connected
+
+The on-device WiGLE CSV is generated from GPS-tagged passive Wi-Fi AP observations and written alongside the normal wardrive log under `logs/wigle/`.
 
 Optional `PCF8563` RTC support now shares the same I2C bus as the OLED on `D4` and `D5` at address `0x51`. When present, OinkSpy can:
 

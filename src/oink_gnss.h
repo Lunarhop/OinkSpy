@@ -33,7 +33,8 @@ struct Status {
     int rxPin;
     int txPin;
     unsigned long baud;
-    int satellites;
+    int satellitesSeen;
+    int satellitesUsed;
     unsigned long lastByteAgeMs;
     unsigned long lastSentenceAgeMs;
     unsigned long lastFixAgeMs;
@@ -42,6 +43,7 @@ struct Status {
 bool begin();
 void update();
 bool gpsSeen();
+int satellitesSeen();
 int satellitesUsed();
 bool hasFix();
 Fix getFix();

@@ -25,8 +25,11 @@ constexpr const char* kLogsDir = "logs";
 constexpr const char* kSessionsDir = "logs/sessions";
 constexpr const char* kDailyDir = "logs/daily";
 constexpr const char* kWardriveDir = "logs/wardrive";
+constexpr const char* kWigleDir = "logs/wigle";
 constexpr const char* kUnsyncedDayToken = "unsynced";
 constexpr const char* kFirmwareVersion = "0.2.0-dev";
+constexpr const char* kWiglePreamble = "WigleWifi-1.6,appRelease=OinkSpy,model=XIAO ESP32S3,release=0.2.0-dev,device=oinkspy,display=SSD1306,board=seeed_xiao_esp32s3,brand=Seeed";
+constexpr const char* kWigleHeader = "MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type";
 constexpr size_t kLogQueueLength = 48;
 constexpr uint32_t kLogTaskStack = 6144;
 constexpr size_t kWardriveDedupEntryCount = 96;
@@ -55,10 +58,12 @@ struct LogEvent {
 QueueHandle_t gLogQueue = nullptr;
 TaskHandle_t gLogTaskHandle = nullptr;
 FsFile gWardriveFile;
+FsFile gWigleFile;
 uint16_t gWardriveFileIndex = 0;
 
 struct WardriveDedupEntry {
     char mac[18];
+    char name[48];
     char method[32];
     unsigned long lastLoggedMs;
     bool hasGps;
@@ -204,6 +209,7 @@ double wardriveDistanceMeters(double lat1, double lon1, double lat2, double lon2
 
 void updateWardriveDedupEntry(WardriveDedupEntry& entry, const oink::Detection& detection) {
     entry.lastLoggedMs = millis();
+    strlcpy(entry.name, detection.name, sizeof(entry.name));
     entry.hasGps = detection.hasGPS;
     if (detection.hasGPS) {
         entry.gpsLat = detection.gpsLat;
@@ -212,6 +218,16 @@ void updateWardriveDedupEntry(WardriveDedupEntry& entry, const oink::Detection& 
         entry.gpsLat = 0.0;
         entry.gpsLon = 0.0;
     }
+}
+
+bool sameWardriveIdentity(const WardriveDedupEntry& entry, const oink::Detection& detection) {
+    if (strcasecmp(entry.mac, detection.mac) != 0 || strcasecmp(entry.method, detection.method) != 0) {
+        return false;
+    }
+    if (strcasecmp(detection.method, "wifi_ap") == 0) {
+        return strcasecmp(entry.name, detection.name) == 0;
+    }
+    return true;
 }
 
 bool wardriveCanRun(String& message) {
@@ -241,6 +257,128 @@ size_t wardriveRotationBytes() {
 
 String csvField(const char* text);
 void flushWardriveFile(const char* reason);
+void flushWigleFile();
+bool readSdLine(FsFile& file, char* buffer, size_t bufferSize);
+bool validateWigleCsvFile(FsFile& file, String& error);
+void rememberClosedWigleFile(const char* path, size_t fileBytes);
+
+void formatWigleTimestamp(char* buffer, size_t bufferSize, time_t epoch) {
+    if (!buffer || bufferSize == 0) {
+        return;
+    }
+    if (epoch <= 0) {
+        strlcpy(buffer, "1970-01-01 00:00:00", bufferSize);
+        return;
+    }
+    struct tm utcTime = {};
+    gmtime_r(&epoch, &utcTime);
+    strftime(buffer, bufferSize, "%Y-%m-%d %H:%M:%S", &utcTime);
+}
+
+String buildWigleCsvLine(const oink::Detection& detection) {
+    time_t epoch = oink::timeutil::currentEpoch();
+    char firstSeen[24];
+    formatWigleTimestamp(firstSeen, sizeof(firstSeen), epoch);
+
+    String line;
+    line.reserve(256);
+    line += csvField(detection.mac);
+    line += ',';
+    line += csvField(detection.name);
+    line += ',';
+    line += csvField(detection.wifiAuthMode[0] ? detection.wifiAuthMode : "[UNKNOWN][ESS]");
+    line += ',';
+    line += csvField(firstSeen);
+    line += ',';
+    line += String(detection.wifiChannel);
+    line += ',';
+    line += String(detection.wifiFrequencyMhz);
+    line += ',';
+    line += String(detection.rssi);
+    line += ',';
+    line += String(detection.gpsLat, 8);
+    line += ',';
+    line += String(detection.gpsLon, 8);
+    line += ',';
+    line += "0";
+    line += ',';
+    line += String(detection.gpsAcc, 1);
+    line += ',';
+    line += ',';
+    line += ',';
+    line += "WIFI";
+    return line;
+}
+
+bool readSdLine(FsFile& file, char* buffer, size_t bufferSize) {
+    if (!buffer || bufferSize == 0) {
+        return false;
+    }
+    size_t index = 0;
+    bool sawData = false;
+    while (file.available()) {
+        int value = file.read();
+        if (value < 0) {
+            break;
+        }
+        sawData = true;
+        char ch = static_cast<char>(value);
+        if (ch == '\r') {
+            continue;
+        }
+        if (ch == '\n') {
+            break;
+        }
+        if (index + 1 < bufferSize) {
+            buffer[index++] = ch;
+        }
+    }
+    buffer[index] = '\0';
+    return sawData || index > 0;
+}
+
+bool validateWigleCsvFile(FsFile& file, String& error) {
+    error = "";
+    if (!file) {
+        error = "WiGLE CSV file not found";
+        return false;
+    }
+
+    char line[256];
+    if (!readSdLine(file, line, sizeof(line))) {
+        error = "WiGLE CSV file is empty";
+        return false;
+    }
+    if (strcmp(line, kWiglePreamble) != 0) {
+        error = "WiGLE CSV header is invalid";
+        return false;
+    }
+    if (!readSdLine(file, line, sizeof(line))) {
+        error = "WiGLE CSV header row is missing";
+        return false;
+    }
+    if (strcmp(line, kWigleHeader) != 0) {
+        error = "WiGLE CSV columns do not match WiGLE 1.6";
+        return false;
+    }
+    if (!readSdLine(file, line, sizeof(line))) {
+        error = "WiGLE CSV has no data rows yet";
+        return false;
+    }
+    if (!line[0]) {
+        error = "WiGLE CSV has no data rows yet";
+        return false;
+    }
+    return true;
+}
+
+void rememberClosedWigleFile(const char* path, size_t fileBytes) {
+    if (!path || !path[0]) {
+        return;
+    }
+    strlcpy(oink::gApp.wigleLastClosedPath, path, sizeof(oink::gApp.wigleLastClosedPath));
+    oink::gApp.wigleLastClosedFileBytes = fileBytes;
+}
 
 String buildWardriveCsvLine(const oink::Detection& detection) {
     char isoBuffer[40];
@@ -266,6 +404,12 @@ String buildWardriveCsvLine(const oink::Detection& detection) {
     line += csvField(detection.name);
     line += ',';
     line += csvField(detection.method);
+    line += ',';
+    line += String(detection.wifiChannel);
+    line += ',';
+    line += String(detection.wifiFrequencyMhz);
+    line += ',';
+    line += csvField(detection.wifiAuthMode);
     line += ',';
     line += String(detection.rssi);
     line += ',';
@@ -295,6 +439,7 @@ bool openWardriveFile() {
 
     ensureDir(kLogsDir);
     ensureDir(kWardriveDir);
+    ensureDir(kWigleDir);
 
     char dayToken[16];
     oink::timeutil::currentDayToken(dayToken, sizeof(dayToken));
@@ -321,9 +466,34 @@ bool openWardriveFile() {
         gWardriveFile.println("# oinkspy_wardrive=1");
         gWardriveFile.println("# device_id=" + String(oink::settings::deviceId()));
         gWardriveFile.println("# boot_count=" + String(oink::settings::bootCount()));
-        gWardriveFile.println("millis,epoch,iso8601,time_source,device_id,boot_count,mac,name,method,rssi,count,is_raven,raven_fw,gps_lat,gps_lon,gps_acc");
+        gWardriveFile.println("millis,epoch,iso8601,time_source,device_id,boot_count,mac,name,method,wifi_channel,wifi_frequency_mhz,wifi_auth_mode,rssi,count,is_raven,raven_fw,gps_lat,gps_lon,gps_acc");
         flushWardriveFile("header");
         oink::gApp.wardriveCurrentFileBytes = static_cast<size_t>(gWardriveFile.fileSize());
+    }
+
+    snprintf(oink::gApp.wigleCurrentPath,
+             sizeof(oink::gApp.wigleCurrentPath),
+             "%s/wigle-%s-boot%06lu-%03u.csv",
+             kWigleDir,
+             dayToken,
+             oink::settings::bootCount(),
+             static_cast<unsigned>(gWardriveFileIndex));
+
+    gWigleFile = gSd.open(oink::gApp.wigleCurrentPath, O_WRONLY | O_CREAT | O_APPEND);
+    if (!gWigleFile) {
+        gWardriveFile.close();
+        oink::gApp.wardriveActive = false;
+        oink::gApp.wardriveCurrentFileBytes = 0;
+        oink::gApp.wardriveCurrentPath[0] = '\0';
+        return false;
+    }
+
+    oink::gApp.wigleCurrentFileBytes = static_cast<size_t>(gWigleFile.fileSize());
+    if (oink::gApp.wigleCurrentFileBytes == 0) {
+        gWigleFile.println(kWiglePreamble);
+        gWigleFile.println(kWigleHeader);
+        flushWigleFile();
+        oink::gApp.wigleCurrentFileBytes = static_cast<size_t>(gWigleFile.fileSize());
     }
 
     oink::gApp.wardriveActive = true;
@@ -338,6 +508,12 @@ void closeWardriveFile() {
         flushWardriveFile("close");
         gWardriveFile.close();
     }
+    if (gWigleFile) {
+        flushWigleFile();
+        oink::gApp.wigleCurrentFileBytes = static_cast<size_t>(gWigleFile.fileSize());
+        rememberClosedWigleFile(oink::gApp.wigleCurrentPath, oink::gApp.wigleCurrentFileBytes);
+        gWigleFile.close();
+    }
     oink::gApp.wardriveActive = false;
 }
 
@@ -347,6 +523,8 @@ void clearWardriveRuntimeState() {
     oink::gApp.wardriveLastRotateMs = 0;
     oink::gApp.wardriveCurrentFileBytes = 0;
     oink::gApp.wardriveCurrentPath[0] = '\0';
+    oink::gApp.wigleCurrentFileBytes = 0;
+    oink::gApp.wigleCurrentPath[0] = '\0';
 }
 
 #if OINK_WDRIVE_DEBUG
@@ -476,6 +654,18 @@ void flushWardriveFile(const char* reason) {
 #endif
 }
 
+void flushWigleFile() {
+    if (!gWigleFile) {
+        return;
+    }
+    gWigleFile.flush();
+    if (gWigleFile.getWriteError()) {
+        oink::gApp.sdLoggingHealthy = false;
+        return;
+    }
+    oink::gApp.wigleCurrentFileBytes = static_cast<size_t>(gWigleFile.fileSize());
+}
+
 bool shouldLogWardrive(const oink::Detection& detection) {
     if (!oink::gApp.wardriveActive) {
         return false;
@@ -492,7 +682,7 @@ bool shouldLogWardrive(const oink::Detection& detection) {
         if (entry.mac[0] == '\0') {
             continue;
         }
-        if (strcasecmp(entry.mac, detection.mac) == 0 && strcasecmp(entry.method, detection.method) == 0) {
+        if (sameWardriveIdentity(entry, detection)) {
             if (millis() - entry.lastLoggedMs < windowMs) {
                 bool movedEnough = false;
                 if (detection.hasGPS && entry.hasGps &&
@@ -529,6 +719,7 @@ bool shouldLogWardrive(const oink::Detection& detection) {
 
     WardriveDedupEntry& slot = gWardriveDedup[gWardriveDedupNext];
     strlcpy(slot.mac, detection.mac, sizeof(slot.mac));
+    strlcpy(slot.name, detection.name, sizeof(slot.name));
     strlcpy(slot.method, detection.method, sizeof(slot.method));
     updateWardriveDedupEntry(slot, detection);
     gWardriveDedupNext = (gWardriveDedupNext + 1) % kWardriveDedupEntryCount;
@@ -1012,6 +1203,80 @@ bool writeSdTextFile(const char* path, const String& content) {
     return true;
 }
 
+bool prepareWigleCsv(char* pathOut, size_t pathOutSize, size_t& fileBytes, String& error) {
+    error = "";
+    fileBytes = 0;
+    oink::gApp.wigleUploadCandidatePath[0] = '\0';
+    if (!gApp.sdReady) {
+        error = "SD card not ready";
+        return false;
+    }
+    if (gApp.wardriveActive) {
+        error = "Stop Wardrive before WiGLE export or upload";
+        return false;
+    }
+    const char* candidatePath = gApp.wigleLastClosedPath[0] ? gApp.wigleLastClosedPath : gApp.wigleCurrentPath;
+    if (!candidatePath[0]) {
+        error = "No WiGLE CSV captured yet";
+        return false;
+    }
+
+    FsFile file = gSd.open(candidatePath, O_RDONLY);
+    if (!file) {
+        error = "WiGLE CSV file not found";
+        return false;
+    }
+    fileBytes = static_cast<size_t>(file.fileSize());
+    if (fileBytes == 0) {
+        file.close();
+        error = "WiGLE CSV file is empty";
+        return false;
+    }
+    if (!validateWigleCsvFile(file, error)) {
+        file.close();
+        return false;
+    }
+    file.close();
+    if (pathOut && pathOutSize > 0) {
+        strlcpy(pathOut, candidatePath, pathOutSize);
+    }
+    strlcpy(gApp.wigleUploadCandidatePath, candidatePath, sizeof(gApp.wigleUploadCandidatePath));
+    if (strcmp(candidatePath, gApp.wigleCurrentPath) == 0) {
+        gApp.wigleCurrentFileBytes = fileBytes;
+    }
+    if (strcmp(candidatePath, gApp.wigleLastClosedPath) == 0) {
+        gApp.wigleLastClosedFileBytes = fileBytes;
+    }
+    return true;
+}
+
+bool writeSdFileToStream(const char* path, Print& out) {
+    if (!gApp.sdReady || !path || !path[0]) {
+        return false;
+    }
+
+    FsFile file = gSd.open(path, O_RDONLY);
+    if (!file) {
+        return false;
+    }
+
+    uint8_t buffer[512];
+    while (file.available()) {
+        int readCount = file.read(buffer, sizeof(buffer));
+        if (readCount <= 0) {
+            file.close();
+            return false;
+        }
+        size_t written = out.write(buffer, static_cast<size_t>(readCount));
+        if (written != static_cast<size_t>(readCount)) {
+            file.close();
+            return false;
+        }
+    }
+    file.close();
+    return true;
+}
+
 void saveSession() {
     if (!gApp.spiffsReady || !gApp.mutex) {
         return;
@@ -1054,7 +1319,7 @@ void saveSession() {
     file.print("]");
     file.close();
 
-    gApp.lastSaveCount = gApp.detectionCount;
+    gApp.lastSaveRevision = gApp.detectionRevision;
     printf("[OINK-YOU] Session saved: %d detections\n", gApp.detectionCount);
     xSemaphoreGive(gApp.mutex);
 }
@@ -1066,14 +1331,14 @@ void pollAutoSave() {
 
     unsigned long saveIntervalMs = gApp.runtimeConfig.saveIntervalMs > 0 ? gApp.runtimeConfig.saveIntervalMs : config::kSaveIntervalMs;
     if (millis() - gApp.lastSave >= saveIntervalMs) {
-        if (gApp.detectionCount > 0 && gApp.detectionCount != gApp.lastSaveCount) {
+        if (gApp.detectionCount > 0 && gApp.detectionRevision != gApp.lastSaveRevision) {
             saveSession();
         }
         gApp.lastSave = millis();
         return;
     }
 
-    if (gApp.detectionCount > 0 && gApp.lastSaveCount == 0 && millis() - gApp.lastSave >= config::kInitialSaveDelayMs) {
+    if (gApp.detectionCount > 0 && gApp.lastSaveRevision == 0 && millis() - gApp.lastSave >= config::kInitialSaveDelayMs) {
         saveSession();
         gApp.lastSave = millis();
     }
@@ -1207,6 +1472,7 @@ void pollWardrive() {
     }
 
     flushWardriveFile("interval");
+    flushWigleFile();
 }
 
 void appendWardriveDetection(const Detection& detection) {
@@ -1256,6 +1522,16 @@ void appendWardriveDetection(const Detection& detection) {
 
     gApp.sdLoggingHealthy = true;
     gApp.wardriveCurrentFileBytes = static_cast<size_t>(gWardriveFile.fileSize());
+    if (strcasecmp(detection.method, "wifi_ap") == 0 && detection.hasGPS && gWigleFile) {
+        String wigleLine = buildWigleCsvLine(detection);
+        if (!gWigleFile.println(wigleLine)) {
+            printf("[OINK-YOU] WiGLE sidecar append failed: %s\n", gApp.wigleCurrentPath);
+            gApp.sdLoggingHealthy = false;
+            closeWardriveFile();
+            return;
+        }
+        gApp.wigleCurrentFileBytes = static_cast<size_t>(gWigleFile.fileSize());
+    }
 #if OINK_WDRIVE_DEBUG
     ++gWardriveDebugMetrics.apsLogged;
     pushWardriveDebugEvent("candidate",
@@ -1273,6 +1549,7 @@ void appendWardriveDetection(const Detection& detection) {
         static_cast<unsigned long>(gApp.runtimeConfig.wardrive.flushIntervalSeconds) * 1000UL;
     if (flushIntervalMs == 0 || millis() - gApp.wardriveLastFlushMs >= flushIntervalMs) {
         flushWardriveFile("append");
+        flushWigleFile();
     }
 }
 
@@ -1553,6 +1830,10 @@ const char* dailyCsvPath() {
 
 const char* dailyJsonlPath() {
     return gApp.dailyJsonlPath;
+}
+
+const char* wigleCsvPath() {
+    return gApp.wigleLastClosedPath[0] ? gApp.wigleLastClosedPath : gApp.wigleCurrentPath;
 }
 
 size_t queuedEventCount() {

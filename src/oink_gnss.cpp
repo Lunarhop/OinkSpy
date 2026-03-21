@@ -28,6 +28,12 @@ HardwareSerial gGnssSerial(OINK_GNSS_HW_SERIAL_NUM);
 #endif
 
 TinyGPSPlus gGps;
+TinyGPSCustom gGpsSatsInViewGn(gGps, "GNGSV", 3);
+TinyGPSCustom gGpsSatsInViewGp(gGps, "GPGSV", 3);
+TinyGPSCustom gGpsSatsInViewGl(gGps, "GLGSV", 3);
+TinyGPSCustom gGpsSatsInViewGa(gGps, "GAGSV", 3);
+TinyGPSCustom gGpsSatsInViewGb(gGps, "GBGSV", 3);
+TinyGPSCustom gGpsSatsInViewBd(gGps, "BDGSV", 3);
 bool gEnabled = false;
 bool gSerialBegun = false;
 bool gSeen = false;
@@ -40,6 +46,17 @@ unsigned long gLastFixMs = 0;
 char gLastSentence[oink::config::kGnssSentenceBufferSize] = "";
 char gSentenceBuffer[oink::config::kGnssSentenceBufferSize] = "";
 size_t gSentenceLength = 0;
+
+int parseSatelliteValue(TinyGPSCustom& field) {
+    if (!field.isValid() || field.age() >= oink::config::kGpsStaleMs) {
+        return -1;
+    }
+    const char* value = field.value();
+    if (!value || !value[0]) {
+        return -1;
+    }
+    return atoi(value);
+}
 
 const char* pinName(int pin) {
     switch (pin) {
@@ -254,6 +271,34 @@ bool gpsSeen() {
     return gSeen;
 }
 
+int satellitesSeen() {
+    int combined = parseSatelliteValue(gGpsSatsInViewGn);
+    if (combined >= 0) {
+        return combined;
+    }
+
+    int total = 0;
+    bool any = false;
+    TinyGPSCustom* const groups[] = {
+        &gGpsSatsInViewGp,
+        &gGpsSatsInViewGl,
+        &gGpsSatsInViewGa,
+        &gGpsSatsInViewGb,
+        &gGpsSatsInViewBd,
+    };
+    for (TinyGPSCustom* field : groups) {
+        int count = parseSatelliteValue(*field);
+        if (count >= 0) {
+            total += count;
+            any = true;
+        }
+    }
+    if (any) {
+        return total;
+    }
+    return gSeen ? gSatellites : -1;
+}
+
 int satellitesUsed() {
     return gGps.satellites.isValid() ? gSatellites : -1;
 }
@@ -293,7 +338,8 @@ Status getStatus() {
     status.rxPin = OINK_GNSS_UART_RX;
     status.txPin = OINK_GNSS_UART_TX;
     status.baud = OINK_GNSS_BAUD;
-    status.satellites = satellitesUsed();
+    status.satellitesSeen = satellitesSeen();
+    status.satellitesUsed = satellitesUsed();
     unsigned long now = millis();
     status.lastByteAgeMs = gLastByteMs ? (now - gLastByteMs) : 0;
     status.lastSentenceAgeMs = gLastSentenceMs ? (now - gLastSentenceMs) : 0;
@@ -308,12 +354,18 @@ const char* lastSentence() {
 void printStatus(Stream& out) {
     Status status = getStatus();
     Fix fix = getFix();
-    char satsBuf[8];
+    char satsSeenBuf[8];
+    char satsUsedBuf[8];
     char hdopBuf[12];
-    if (status.satellites >= 0) {
-        snprintf(satsBuf, sizeof(satsBuf), "%d", status.satellites);
+    if (status.satellitesSeen >= 0) {
+        snprintf(satsSeenBuf, sizeof(satsSeenBuf), "%d", status.satellitesSeen);
     } else {
-        strlcpy(satsBuf, "-", sizeof(satsBuf));
+        strlcpy(satsSeenBuf, "-", sizeof(satsSeenBuf));
+    }
+    if (status.satellitesUsed >= 0) {
+        snprintf(satsUsedBuf, sizeof(satsUsedBuf), "%d", status.satellitesUsed);
+    } else {
+        strlcpy(satsUsedBuf, "-", sizeof(satsUsedBuf));
     }
     if (fix.hasHdop) {
         snprintf(hdopBuf, sizeof(hdopBuf), "%.2f", fix.hdop);
@@ -326,7 +378,8 @@ void printStatus(Stream& out) {
                pinName(status.txPin),
                status.baud,
                status.seen ? "seen" : "none",
-               satsBuf);
+               satsSeenBuf);
+    out.printf("/%s", satsUsedBuf);
     out.printf(" Fix: %s HDOP: %s last_ms=%lu\n",
                status.hasFix ? "yes" : "no",
                hdopBuf,
@@ -336,10 +389,12 @@ void printStatus(Stream& out) {
 void writeStatusJson(Print& out) {
     Status status = getStatus();
     Fix fix = getFix();
-    out.printf("{\"enabled\":%s,\"gps_seen\":%s,\"satellites\":%d,\"has_fix\":%s,\"uart\":%d,\"rx_pin\":\"%s\",\"tx_pin\":\"%s\",\"baud\":%lu,\"last_byte_age_ms\":%lu,\"last_sentence_age_ms\":%lu,\"last_fix_age_ms\":%lu,\"hdop\":%.2f}",
+    out.printf("{\"enabled\":%s,\"gps_seen\":%s,\"satellites\":%d,\"satellites_seen\":%d,\"satellites_used\":%d,\"has_fix\":%s,\"uart\":%d,\"rx_pin\":\"%s\",\"tx_pin\":\"%s\",\"baud\":%lu,\"last_byte_age_ms\":%lu,\"last_sentence_age_ms\":%lu,\"last_fix_age_ms\":%lu,\"hdop\":%.2f}",
                status.enabled ? "true" : "false",
                status.seen ? "true" : "false",
-               status.satellites >= 0 ? status.satellites : 0,
+               status.satellitesUsed >= 0 ? status.satellitesUsed : 0,
+               status.satellitesSeen,
+               status.satellitesUsed,
                status.hasFix ? "true" : "false",
                status.uartIndex,
                pinName(status.rxPin),

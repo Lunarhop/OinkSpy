@@ -33,9 +33,6 @@ bool gButtonStablePressed = false;
 bool gButtonLastReading = false;
 unsigned long gButtonLastTransitionMs = 0;
 unsigned long gButtonPressStartMs = 0;
-bool gLongPressQueued = false;
-uint8_t gPendingShortPresses = 0;
-unsigned long gLastShortReleaseMs = 0;
 
 const AudioStep* gActivePattern = nullptr;
 size_t gActivePatternLength = 0;
@@ -525,33 +522,14 @@ void pollControls() {
         gButtonStablePressed = reading;
         if (gButtonStablePressed) {
             gButtonPressStartMs = now;
-            gLongPressQueued = false;
-        } else if (!gLongPressQueued) {
-            if (gPendingShortPresses == 1 && now - gLastShortReleaseMs <= config::kButtonDoublePressMs) {
-                enqueueEvent(ControlEvent::DoublePress);
-                gPendingShortPresses = 0;
-                gLastShortReleaseMs = 0;
+        } else {
+            unsigned long pressDurationMs = now - gButtonPressStartMs;
+            if (pressDurationMs >= config::kButtonLongPressMs) {
+                enqueueEvent(ControlEvent::LongPress);
             } else {
-                if (gPendingShortPresses > 0) {
-                    enqueueEvent(ControlEvent::ShortPress);
-                }
-                gPendingShortPresses = 1;
-                gLastShortReleaseMs = now;
+                enqueueEvent(ControlEvent::ShortPress);
             }
         }
-    }
-
-    if (gButtonStablePressed && !gLongPressQueued && now - gButtonPressStartMs >= config::kButtonLongPressMs) {
-        gLongPressQueued = true;
-        gPendingShortPresses = 0;
-        gLastShortReleaseMs = 0;
-        enqueueEvent(ControlEvent::LongPress);
-    }
-
-    if (!gButtonStablePressed && gPendingShortPresses == 1 && now - gLastShortReleaseMs >= config::kButtonDoublePressMs) {
-        enqueueEvent(ControlEvent::ShortPress);
-        gPendingShortPresses = 0;
-        gLastShortReleaseMs = 0;
     }
 }
 
@@ -585,8 +563,8 @@ void serviceUi() {
     gDisplay.setFont(u8g2_font_6x12_tr);
     gDisplay.drawStr(0, 12, "OINKSPY");
 
-    char countBuf[12];
-    snprintf(countBuf, sizeof(countBuf), "%d", oink::gApp.detectionCount);
+    char countBuf[16];
+    snprintf(countBuf, sizeof(countBuf), "%lu", oink::gApp.sessionDiscoveryCount);
     gDisplay.drawStr(96, 12, countBuf);
 
     PigMood mood = currentPigMood();

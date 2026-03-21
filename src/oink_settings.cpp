@@ -15,6 +15,10 @@ namespace {
 constexpr const char* kPrefsNamespace = "oinkspy";
 constexpr const char* kConfigKey = "config_json";
 constexpr const char* kBootCountKey = "boot_count";
+constexpr const char* kClientWifiSsidKey = "sta_ssid";
+constexpr const char* kClientWifiPasswordKey = "sta_pass";
+constexpr const char* kWigleApiNameKey = "wig_name";
+constexpr const char* kWigleApiTokenKey = "wig_token";
 constexpr const char* kConfigPath = "config/oinkspy.json";
 constexpr uint16_t kWardriveFlushIntervalDefault = 60;
 constexpr uint16_t kWardriveFlushIntervalMin = 15;
@@ -94,6 +98,26 @@ void mergeWardriveConfig(JsonObject wardriveRoot) {
 
 void loadDefaults() {
     memset(&oink::gApp.runtimeConfig, 0, sizeof(oink::gApp.runtimeConfig));
+    oink::gApp.clientWifiConfigured = false;
+    oink::gApp.clientWifiConnecting = false;
+    oink::gApp.clientWifiConnected = false;
+    oink::gApp.clientWifiLastAttemptMs = 0;
+    oink::gApp.clientWifiSsid[0] = '\0';
+    oink::gApp.clientWifiPassword[0] = '\0';
+    strlcpy(oink::gApp.clientWifiStatus, "not configured", sizeof(oink::gApp.clientWifiStatus));
+    oink::gApp.clientWifiIp[0] = '\0';
+    oink::gApp.wigleConfigured = false;
+    oink::gApp.wigleUploadRequested = false;
+    oink::gApp.wigleUploadInProgress = false;
+    oink::gApp.wigleUploadStatusCode = 0;
+    oink::gApp.wigleUploadLastMs = 0;
+    oink::gApp.wigleApiName[0] = '\0';
+    oink::gApp.wigleApiToken[0] = '\0';
+    strlcpy(oink::gApp.wigleUploadStatus, "idle", sizeof(oink::gApp.wigleUploadStatus));
+    oink::gApp.wigleUploadCandidatePath[0] = '\0';
+    oink::gApp.wigleLastUploadPath[0] = '\0';
+    oink::gApp.wigleLastClosedPath[0] = '\0';
+    oink::gApp.wigleLastClosedFileBytes = 0;
     strlcpy(oink::gApp.runtimeConfig.apSsid, oink::config::kApSsid, sizeof(oink::gApp.runtimeConfig.apSsid));
     strlcpy(oink::gApp.runtimeConfig.apPassword, oink::config::kApPassword, sizeof(oink::gApp.runtimeConfig.apPassword));
     strlcpy(oink::gApp.runtimeConfig.timezone, "UTC0", sizeof(oink::gApp.runtimeConfig.timezone));
@@ -117,6 +141,96 @@ void loadDefaults() {
     oink::gApp.runtimeConfig.gnssEnabled = false;
 #endif
     loadWardriveDefaults();
+}
+
+void loadSecretsFromPrefs(Preferences& prefs) {
+    String staSsid = prefs.getString(kClientWifiSsidKey, "");
+    String staPass = prefs.getString(kClientWifiPasswordKey, "");
+    if (!staSsid.isEmpty() && !staPass.isEmpty()) {
+        strlcpy(oink::gApp.clientWifiSsid, staSsid.c_str(), sizeof(oink::gApp.clientWifiSsid));
+        strlcpy(oink::gApp.clientWifiPassword, staPass.c_str(), sizeof(oink::gApp.clientWifiPassword));
+        oink::gApp.clientWifiConfigured = true;
+        strlcpy(oink::gApp.clientWifiStatus, "stored in memory", sizeof(oink::gApp.clientWifiStatus));
+    }
+
+    String wigleName = prefs.getString(kWigleApiNameKey, "");
+    String wigleToken = prefs.getString(kWigleApiTokenKey, "");
+    if (!wigleName.isEmpty() && !wigleToken.isEmpty()) {
+        strlcpy(oink::gApp.wigleApiName, wigleName.c_str(), sizeof(oink::gApp.wigleApiName));
+        strlcpy(oink::gApp.wigleApiToken, wigleToken.c_str(), sizeof(oink::gApp.wigleApiToken));
+        oink::gApp.wigleConfigured = true;
+    }
+}
+
+bool importSecretsFromJson(String& jsonText, Preferences& prefs, bool& scrubbed) {
+    scrubbed = false;
+    if (jsonText.isEmpty()) {
+        return false;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, jsonText);
+    if (err || !doc.is<JsonObject>()) {
+        return false;
+    }
+
+    JsonObject root = doc.as<JsonObject>();
+    JsonObject clientWifi = root["client_wifi"].as<JsonObject>();
+    if (clientWifi) {
+        String ssid = clientWifi["ssid"] | "";
+        String password = clientWifi["password"] | "";
+        if (!ssid.isEmpty() && !password.isEmpty()) {
+            prefs.putString(kClientWifiSsidKey, ssid);
+            prefs.putString(kClientWifiPasswordKey, password);
+            strlcpy(oink::gApp.clientWifiSsid, ssid.c_str(), sizeof(oink::gApp.clientWifiSsid));
+            strlcpy(oink::gApp.clientWifiPassword, password.c_str(), sizeof(oink::gApp.clientWifiPassword));
+            oink::gApp.clientWifiConfigured = true;
+            strlcpy(oink::gApp.clientWifiStatus, "imported from SD, scrubbed", sizeof(oink::gApp.clientWifiStatus));
+        }
+        root.remove("client_wifi");
+        scrubbed = true;
+    }
+
+    JsonObject wigle = root["wigle"].as<JsonObject>();
+    if (wigle) {
+        String apiName = wigle["api_name"] | "";
+        String apiToken = wigle["api_token"] | "";
+        if (!apiName.isEmpty() && !apiToken.isEmpty()) {
+            prefs.putString(kWigleApiNameKey, apiName);
+            prefs.putString(kWigleApiTokenKey, apiToken);
+            strlcpy(oink::gApp.wigleApiName, apiName.c_str(), sizeof(oink::gApp.wigleApiName));
+            strlcpy(oink::gApp.wigleApiToken, apiToken.c_str(), sizeof(oink::gApp.wigleApiToken));
+            oink::gApp.wigleConfigured = true;
+        }
+        root.remove("wigle");
+        scrubbed = true;
+    }
+
+    if (!scrubbed) {
+        return false;
+    }
+
+    jsonText = "";
+    serializeJsonPretty(doc, jsonText);
+    jsonText += '\n';
+    return true;
+}
+
+bool storeSecretPair(const char* keyA,
+                     const char* valueA,
+                     const char* keyB,
+                     const char* valueB,
+                     String& error) {
+    error = "";
+    Preferences prefs;
+    if (!prefs.begin(kPrefsNamespace, false)) {
+        error = "Preferences unavailable";
+        return false;
+    }
+    prefs.putString(keyA, valueA ? valueA : "");
+    prefs.putString(keyB, valueB ? valueB : "");
+    prefs.end();
+    return true;
 }
 
 void mergeConfigJson(const String& jsonText) {
@@ -192,6 +306,7 @@ void load() {
 
     gApp.bootCount = prefs.getULong(kBootCountKey, 0) + 1;
     prefs.putULong(kBootCountKey, gApp.bootCount);
+    loadSecretsFromPrefs(prefs);
 
     String nvsConfig = prefs.getString(kConfigKey, "");
     if (!nvsConfig.isEmpty()) {
@@ -201,9 +316,18 @@ void load() {
 
     String sdConfig;
     if (oink::log::readSdTextFile(kConfigPath, sdConfig)) {
+        bool scrubbed = false;
+        importSecretsFromJson(sdConfig, prefs, scrubbed);
         mergeConfigJson(sdConfig);
         prefs.putString(kConfigKey, sdConfig);
         printf("[OINK-YOU] Loaded config from SD: %s\n", kConfigPath);
+        if (scrubbed) {
+            if (oink::log::writeSdTextFile(kConfigPath, sdConfig)) {
+                printf("[OINK-YOU] Scrubbed imported client WiFi / WiGLE secrets from SD config\n");
+            } else {
+                printf("[OINK-YOU] Warning: imported secrets but failed to scrub SD config\n");
+            }
+        }
     }
 
     prefs.end();
@@ -326,6 +450,104 @@ void writeWardriveConfigJson(Print& out) {
                static_cast<unsigned>(gApp.runtimeConfig.wardrive.dedupWindowSeconds),
                static_cast<unsigned>(gApp.runtimeConfig.wardrive.moveThresholdMeters),
                gApp.runtimeConfig.wardrive.logFormat);
+}
+
+bool hasClientWifiCredentials() {
+    return gApp.clientWifiConfigured && gApp.clientWifiSsid[0] && gApp.clientWifiPassword[0];
+}
+
+const char* clientWifiSsid() {
+    return gApp.clientWifiSsid;
+}
+
+const char* clientWifiPassword() {
+    return gApp.clientWifiPassword;
+}
+
+bool setClientWifiCredentials(const char* ssid, const char* password, String& error) {
+    error = "";
+    if (!ssid || !ssid[0] || !password || !password[0]) {
+        error = "SSID and password are required";
+        return false;
+    }
+    if (strlen(ssid) >= sizeof(gApp.clientWifiSsid) || strlen(password) >= sizeof(gApp.clientWifiPassword)) {
+        error = "Client WiFi credentials are too long";
+        return false;
+    }
+    if (!storeSecretPair(kClientWifiSsidKey, ssid, kClientWifiPasswordKey, password, error)) {
+        return false;
+    }
+    strlcpy(gApp.clientWifiSsid, ssid, sizeof(gApp.clientWifiSsid));
+    strlcpy(gApp.clientWifiPassword, password, sizeof(gApp.clientWifiPassword));
+    gApp.clientWifiConfigured = true;
+    gApp.clientWifiConnecting = false;
+    gApp.clientWifiConnected = false;
+    gApp.clientWifiLastAttemptMs = 0;
+    gApp.clientWifiIp[0] = '\0';
+    strlcpy(gApp.clientWifiStatus, "stored in memory", sizeof(gApp.clientWifiStatus));
+    oink::scan::onCompanionChange();
+    return true;
+}
+
+bool clearClientWifiCredentials(String& error) {
+    error = "";
+    if (!storeSecretPair(kClientWifiSsidKey, "", kClientWifiPasswordKey, "", error)) {
+        return false;
+    }
+    gApp.clientWifiConfigured = false;
+    gApp.clientWifiConnecting = false;
+    gApp.clientWifiConnected = false;
+    gApp.clientWifiLastAttemptMs = 0;
+    gApp.clientWifiSsid[0] = '\0';
+    gApp.clientWifiPassword[0] = '\0';
+    gApp.clientWifiIp[0] = '\0';
+    strlcpy(gApp.clientWifiStatus, "not configured", sizeof(gApp.clientWifiStatus));
+    oink::scan::onCompanionChange();
+    return true;
+}
+
+bool hasWigleCredentials() {
+    return gApp.wigleConfigured && gApp.wigleApiName[0] && gApp.wigleApiToken[0];
+}
+
+const char* wigleApiName() {
+    return gApp.wigleApiName;
+}
+
+const char* wigleApiToken() {
+    return gApp.wigleApiToken;
+}
+
+bool setWigleCredentials(const char* apiName, const char* apiToken, String& error) {
+    error = "";
+    if (!apiName || !apiName[0] || !apiToken || !apiToken[0]) {
+        error = "WiGLE API name and token are required";
+        return false;
+    }
+    if (strlen(apiName) >= sizeof(gApp.wigleApiName) || strlen(apiToken) >= sizeof(gApp.wigleApiToken)) {
+        error = "WiGLE credentials are too long";
+        return false;
+    }
+    if (!storeSecretPair(kWigleApiNameKey, apiName, kWigleApiTokenKey, apiToken, error)) {
+        return false;
+    }
+    strlcpy(gApp.wigleApiName, apiName, sizeof(gApp.wigleApiName));
+    strlcpy(gApp.wigleApiToken, apiToken, sizeof(gApp.wigleApiToken));
+    gApp.wigleConfigured = true;
+    strlcpy(gApp.wigleUploadStatus, "credentials stored", sizeof(gApp.wigleUploadStatus));
+    return true;
+}
+
+bool clearWigleCredentials(String& error) {
+    error = "";
+    if (!storeSecretPair(kWigleApiNameKey, "", kWigleApiTokenKey, "", error)) {
+        return false;
+    }
+    gApp.wigleConfigured = false;
+    gApp.wigleApiName[0] = '\0';
+    gApp.wigleApiToken[0] = '\0';
+    strlcpy(gApp.wigleUploadStatus, "credentials cleared", sizeof(gApp.wigleUploadStatus));
+    return true;
 }
 
 bool handleCommand(const char* line, Stream& out) {

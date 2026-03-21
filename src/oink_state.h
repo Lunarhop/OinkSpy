@@ -16,6 +16,9 @@ struct Detection {
     char name[48];
     int rssi;
     char method[32];
+    int wifiChannel;
+    int wifiFrequencyMhz;
+    char wifiAuthMode[48];
     unsigned long firstSeen;
     unsigned long lastSeen;
     int count;
@@ -56,6 +59,9 @@ struct RecentLogEvent {
 struct AppState {
     Detection detections[config::kMaxDetections];
     int detectionCount;
+    unsigned long sessionDiscoveryCount;
+    unsigned long sessionGpsTaggedCount;
+    unsigned long detectionRevision;
     SemaphoreHandle_t mutex;
 
     RuntimeConfig runtimeConfig;
@@ -95,7 +101,7 @@ struct AppState {
     char dayToken[16];
 
     unsigned long lastSave;
-    int lastSaveCount;
+    unsigned long lastSaveRevision;
     bool spiffsReady;
     bool sdReady;
     bool sdLoggingHealthy;
@@ -108,6 +114,10 @@ struct AppState {
     unsigned long wardriveLastRotateMs;
     size_t wardriveCurrentFileBytes;
     char wardriveCurrentPath[96];
+    size_t wigleCurrentFileBytes;
+    char wigleCurrentPath[96];
+    size_t wigleLastClosedFileBytes;
+    char wigleLastClosedPath[96];
     char sessionCsvPath[64];
     char sessionJsonlPath[64];
     char dailyCsvPath[64];
@@ -122,6 +132,28 @@ struct AppState {
     unsigned long lastOledRefresh;
     unsigned long lastAlertFlash;
     bool alertFlashOn;
+
+    bool clientWifiConfigured;
+    bool clientWifiConnecting;
+    bool clientWifiConnected;
+    unsigned long clientWifiLastAttemptMs;
+    unsigned long lastApClientEventMs;
+    uint8_t apClientCount;
+    char clientWifiSsid[33];
+    char clientWifiPassword[65];
+    char clientWifiStatus[64];
+    char clientWifiIp[20];
+
+    bool wigleConfigured;
+    bool wigleUploadRequested;
+    bool wigleUploadInProgress;
+    int wigleUploadStatusCode;
+    unsigned long wigleUploadLastMs;
+    char wigleApiName[65];
+    char wigleApiToken[129];
+    char wigleUploadStatus[96];
+    char wigleUploadCandidatePath[96];
+    char wigleLastUploadPath[96];
 };
 
 extern AppState gApp;

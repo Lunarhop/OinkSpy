@@ -6,7 +6,6 @@ enum class ControlEvent {
     None,
     ShortPress,
     LongPress,
-    DoublePress,
 };
 
 void initializePins();

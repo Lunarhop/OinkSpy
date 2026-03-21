@@ -120,6 +120,58 @@ bool wifiModeHasSta(wifi_mode_t mode) {
     return mode == WIFI_STA || mode == WIFI_AP_STA;
 }
 
+bool wardriveWifiShouldYieldToAp(const char*& reason) {
+    if (oink::gApp.apClientCount > 0) {
+        reason = "ap_client_connected";
+        return true;
+    }
+    if (oink::gApp.lastApClientEventMs != 0 &&
+        millis() - oink::gApp.lastApClientEventMs < oink::config::kWardriveWifiApGraceMs) {
+        reason = "ap_client_grace";
+        return true;
+    }
+    reason = "";
+    return false;
+}
+
+int wifiChannelToFrequencyMhz(int channel) {
+    if (channel == 14) {
+        return 2484;
+    }
+    if (channel >= 1 && channel <= 13) {
+        return 2412 + ((channel - 1) * 5);
+    }
+    if (channel >= 32 && channel <= 177) {
+        return 5000 + (channel * 5);
+    }
+    return 0;
+}
+
+const char* wifiAuthModeLabel(wifi_auth_mode_t mode) {
+    switch (mode) {
+        case WIFI_AUTH_OPEN:
+            return "[OPEN][ESS]";
+        case WIFI_AUTH_WEP:
+            return "[WEP][ESS]";
+        case WIFI_AUTH_WPA_PSK:
+            return "[WPA-PSK-CCMP][ESS]";
+        case WIFI_AUTH_WPA2_PSK:
+            return "[WPA2-PSK-CCMP][ESS]";
+        case WIFI_AUTH_WPA_WPA2_PSK:
+            return "[WPA-PSK-CCMP][WPA2-PSK-CCMP][ESS]";
+        case WIFI_AUTH_WPA2_ENTERPRISE:
+            return "[WPA2-EAP-CCMP][ESS]";
+        case WIFI_AUTH_WPA3_PSK:
+            return "[WPA3-SAE-CCMP][ESS]";
+        case WIFI_AUTH_WPA2_WPA3_PSK:
+            return "[WPA2-PSK-CCMP][WPA3-SAE-CCMP][ESS]";
+        case WIFI_AUTH_WAPI_PSK:
+            return "[WAPI-PSK][ESS]";
+        default:
+            return "[UNKNOWN][ESS]";
+    }
+}
+
 void appendWardriveWifiResults(int16_t resultCount) {
     if (resultCount <= 0) {
         return;
@@ -139,6 +191,11 @@ void appendWardriveWifiResults(int16_t resultCount) {
         strlcpy(detection.name, ssid.c_str(), sizeof(detection.name));
         strlcpy(detection.method, "wifi_ap", sizeof(detection.method));
         detection.rssi = WiFi.RSSI(i);
+        detection.wifiChannel = WiFi.channel(i);
+        detection.wifiFrequencyMhz = wifiChannelToFrequencyMhz(detection.wifiChannel);
+        strlcpy(detection.wifiAuthMode,
+                wifiAuthModeLabel(static_cast<wifi_auth_mode_t>(WiFi.encryptionType(i))),
+                sizeof(detection.wifiAuthMode));
         detection.firstSeen = millis();
         detection.lastSeen = detection.firstSeen;
         detection.count = 1;
@@ -210,6 +267,17 @@ void pollWardriveWifiScan() {
         return;
     }
     if (millis() - gWardriveLastWifiScanMs < oink::config::kWardriveWifiScanIntervalMs) {
+        return;
+    }
+    const char* yieldReason = "";
+    if (wardriveWifiShouldYieldToAp(yieldReason)) {
+        oink::log::noteWardriveWifiScanState("skip",
+                                             yieldReason,
+                                             0,
+                                             modeLabel,
+                                             staEnabled,
+                                             false);
+        gWardriveLastWifiScanMs = millis();
         return;
     }
     if (wifiMode == WIFI_OFF) {
@@ -575,6 +643,15 @@ void applyDetectionUpdate(oink::Detection& target, const oink::Detection& source
     if (source.method[0]) {
         strlcpy(target.method, source.method, sizeof(target.method));
     }
+    if (source.wifiChannel > 0) {
+        target.wifiChannel = source.wifiChannel;
+    }
+    if (source.wifiFrequencyMhz > 0) {
+        target.wifiFrequencyMhz = source.wifiFrequencyMhz;
+    }
+    if (source.wifiAuthMode[0]) {
+        strlcpy(target.wifiAuthMode, source.wifiAuthMode, sizeof(target.wifiAuthMode));
+    }
     target.isRaven = source.isRaven;
     if (source.ravenFW[0]) {
         strlcpy(target.ravenFW, source.ravenFW, sizeof(target.ravenFW));
@@ -595,15 +672,38 @@ void addDetectionNotification(const char* method, int rssi) {
     oink::board::addNotification(notification);
 }
 
+bool sameDetectionIdentity(const oink::Detection& left, const oink::Detection& right) {
+    if (strcasecmp(left.mac, right.mac) != 0) {
+        return false;
+    }
+    if (strcasecmp(left.method, "wifi_ap") == 0 || strcasecmp(right.method, "wifi_ap") == 0) {
+        return strcasecmp(left.name, right.name) == 0;
+    }
+    return true;
+}
+
+int selectEvictionIndex() {
+    int oldestIndex = 0;
+    unsigned long oldestSeen = oink::gApp.detections[0].lastSeen;
+    for (int i = 1; i < oink::gApp.detectionCount; ++i) {
+        if (oink::gApp.detections[i].lastSeen < oldestSeen) {
+            oldestSeen = oink::gApp.detections[i].lastSeen;
+            oldestIndex = i;
+        }
+    }
+    return oldestIndex;
+}
+
 int addDetection(const oink::Detection& incoming, bool notifyUser) {
     if (!oink::gApp.mutex || xSemaphoreTake(oink::gApp.mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         return -1;
     }
 
     for (int i = 0; i < oink::gApp.detectionCount; ++i) {
-        if (strcasecmp(oink::gApp.detections[i].mac, incoming.mac) == 0) {
+        if (sameDetectionIdentity(oink::gApp.detections[i], incoming)) {
             oink::gApp.detections[i].count++;
             applyDetectionUpdate(oink::gApp.detections[i], incoming);
+            ++oink::gApp.detectionRevision;
             if (notifyUser) {
                 addDetectionNotification(incoming.method, incoming.rssi);
             }
@@ -612,12 +712,14 @@ int addDetection(const oink::Detection& incoming, bool notifyUser) {
         }
     }
 
-    if (oink::gApp.detectionCount >= oink::config::kMaxDetections) {
-        xSemaphoreGive(oink::gApp.mutex);
-        return -1;
+    int idx = oink::gApp.detectionCount;
+    if (oink::gApp.detectionCount < oink::config::kMaxDetections) {
+        ++oink::gApp.detectionCount;
+    } else {
+        idx = selectEvictionIndex();
     }
 
-    oink::Detection& detection = oink::gApp.detections[oink::gApp.detectionCount];
+    oink::Detection& detection = oink::gApp.detections[idx];
     memset(&detection, 0, sizeof(detection));
     strlcpy(detection.mac, incoming.mac, sizeof(detection.mac));
     if (incoming.name[0]) {
@@ -627,6 +729,9 @@ int addDetection(const oink::Detection& incoming, bool notifyUser) {
     }
     detection.rssi = incoming.rssi;
     strlcpy(detection.method, incoming.method, sizeof(detection.method));
+    detection.wifiChannel = incoming.wifiChannel;
+    detection.wifiFrequencyMhz = incoming.wifiFrequencyMhz;
+    strlcpy(detection.wifiAuthMode, incoming.wifiAuthMode, sizeof(detection.wifiAuthMode));
     detection.firstSeen = millis();
     detection.lastSeen = detection.firstSeen;
     detection.count = 1;
@@ -640,11 +745,15 @@ int addDetection(const oink::Detection& incoming, bool notifyUser) {
     } else {
         attachGps(detection);
     }
+    ++oink::gApp.sessionDiscoveryCount;
+    if (detection.hasGPS) {
+        ++oink::gApp.sessionGpsTaggedCount;
+    }
+    ++oink::gApp.detectionRevision;
     if (notifyUser) {
         addDetectionNotification(incoming.method, incoming.rssi);
     }
 
-    int idx = oink::gApp.detectionCount++;
     xSemaphoreGive(oink::gApp.mutex);
     return idx;
 }
@@ -760,13 +869,16 @@ class BleCallbacks : public NimBLEAdvertisedDeviceCallbacks {
 
         int idx = addDetection(incoming, true);
         int count = 0;
-        oink::Detection wardriveDetection = {};
-        bool haveWardriveDetection = false;
+        oink::Detection wardriveDetection = incoming;
+        wardriveDetection.firstSeen = millis();
+        wardriveDetection.lastSeen = wardriveDetection.firstSeen;
+        wardriveDetection.count = 1;
         if (idx >= 0 && oink::gApp.mutex && xSemaphoreTake(oink::gApp.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             count = oink::gApp.detections[idx].count;
             wardriveDetection = oink::gApp.detections[idx];
-            haveWardriveDetection = true;
             xSemaphoreGive(oink::gApp.mutex);
+        } else {
+            count = wardriveDetection.count;
         }
         printf("[OINK-YOU] DETECTED: %s %s RSSI:%d [%s] count:%d\n",
                addrStr.c_str(),
@@ -791,9 +903,7 @@ class BleCallbacks : public NimBLEAdvertisedDeviceCallbacks {
                                         gpsLon,
                                         gpsAcc,
                                         count);
-        if (haveWardriveDetection) {
-            oink::log::appendWardriveDetection(wardriveDetection);
-        }
+        oink::log::appendWardriveDetection(wardriveDetection);
 
         char gpsBuf[96] = "";
         if (hasGps) {
@@ -931,29 +1041,15 @@ void setupBle() {
 }
 
 void onCompanionChange() {
-    if (gApp.bleClientConnected || gApp.serialHostConnected) {
-        gApp.bleScanDurationSec = gApp.runtimeConfig.companionBleScanDurationSec;
-        if (gApp.runtimeConfig.wardrive.enabled) {
-            WiFi.mode(WIFI_AP_STA);
-            delay(100);
-            WiFi.softAP(gApp.runtimeConfig.apSsid, gApp.runtimeConfig.apPassword);
-            printf("[OINK-YOU] Remote control link active: WiFi AP kept ON for wardrive + phone control, duration %ds\n",
-                   gApp.bleScanDurationSec);
-        } else {
-            WiFi.softAPdisconnect(true);
-            WiFi.mode(WIFI_OFF);
-            printf("[OINK-YOU] Remote control link active: WiFi AP OFF to favor flock drive throughput, duration %ds\n",
-                   gApp.bleScanDurationSec);
-        }
-    } else {
-        WiFi.mode(gApp.runtimeConfig.wardrive.enabled ? WIFI_AP_STA : WIFI_AP);
-        delay(100);
-        WiFi.softAP(gApp.runtimeConfig.apSsid, gApp.runtimeConfig.apPassword);
-        gApp.bleScanDurationSec = gApp.runtimeConfig.standaloneBleScanDurationSec;
-        printf("[OINK-YOU] Local control AP ON (%s), scan duration %ds\n",
-               gApp.runtimeConfig.apSsid,
-               gApp.bleScanDurationSec);
-    }
+    bool remoteControlActive = gApp.bleClientConnected || gApp.serialHostConnected;
+    gApp.bleScanDurationSec = remoteControlActive
+                                  ? gApp.runtimeConfig.companionBleScanDurationSec
+                                  : gApp.runtimeConfig.standaloneBleScanDurationSec;
+    printf("[OINK-YOU] Control mode: %s, WiFi AP preserved (%s), scan duration %ds, AP clients=%u\n",
+           remoteControlActive ? "REMOTE" : "LOCAL",
+           gApp.runtimeConfig.apSsid,
+           gApp.bleScanDurationSec,
+           static_cast<unsigned>(gApp.apClientCount));
 }
 
 void pollScan() {
@@ -1062,6 +1158,10 @@ void resetDetections() {
         return;
     }
     gApp.detectionCount = 0;
+    gApp.sessionDiscoveryCount = 0;
+    gApp.sessionGpsTaggedCount = 0;
+    gApp.detectionRevision = 0;
+    gApp.lastSaveRevision = 0;
     memset(gApp.detections, 0, sizeof(gApp.detections));
     gApp.triggered = false;
     gApp.deviceInRange = false;

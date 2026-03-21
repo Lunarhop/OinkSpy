@@ -4,3 +4,15 @@
 .vscode/
 
 .DS_Store
+
+.sdcard/
+/sdcard/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+/api/exports/
+/api/data/settings.local.json
+/api/data/cumulative_detections.json
+/api/data/cumulative_detections.pkl
+/api/data/*.tmp

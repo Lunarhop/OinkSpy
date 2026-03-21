@@ -54,6 +54,7 @@ static constexpr unsigned long kWardriveWifiScanIntervalMs = 10000;
 // Passive AP scans run alongside BLE and SoftAP traffic, so they need a bit more
 // dwell-time headroom than the bare minimum to avoid async timeout churn.
 static constexpr uint32_t kWardriveWifiMaxMsPerChannel = 250;
+static constexpr unsigned long kWardriveWifiApGraceMs = 15000;
 static constexpr unsigned long kGpsStaleMs = 30000;
 static constexpr unsigned long kSerialTimeoutMs = 5000;
 static constexpr unsigned long kAlertFlashMs = 2000;
@@ -64,7 +65,6 @@ static constexpr unsigned long kSaveIntervalMs = 15000;
 static constexpr unsigned long kInitialSaveDelayMs = 5000;
 static constexpr unsigned long kButtonDebounceMs = 30;
 static constexpr unsigned long kButtonLongPressMs = 800;
-static constexpr unsigned long kButtonDoublePressMs = 500;
 static constexpr unsigned long kAudioTickMs = 8;
 static constexpr size_t kGnssRingBufferSize = 256;
 static constexpr size_t kGnssSentenceBufferSize = 128;
